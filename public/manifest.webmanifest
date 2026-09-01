@@ -1,0 +1,11 @@
+{
+  "name": "Joyce Workspace",
+  "short_name": "Joyce",
+  "description": "Joyce 的个人外贸运营系统",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f6f7f5",
+  "theme_color": "#315f52",
+  "lang": "zh-CN",
+  "orientation": "portrait-primary"
+}

@@ -1,0 +1,41 @@
+{
+  "version": "7",
+  "dialect": "sqlite",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "6",
+      "when": 1784799222215,
+      "tag": "0000_cloudy_norman_osborn",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1784804400000,
+      "tag": "0001_joyce_v21_phase12",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1784812200000,
+      "tag": "0002_joyce_v21_phase4_orders",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1784822400000,
+      "tag": "0003_task_trash_lifecycle",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1784908800000,
+      "tag": "0004_work_reports",
+      "breakpoints": true
+    }
+  ]
+}
