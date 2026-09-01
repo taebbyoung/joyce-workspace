@@ -109,7 +109,7 @@ test("customer editor dialogs render at viewport level and preserve editor scrol
   assert.match(dialog, /当前有未保存的修改，确定关闭吗？/);
   assert.match(dialog, /继续编辑/);
   assert.match(dialog, /放弃修改/);
-  assert.equal(customerDetail.match(/<CustomerEditorDialog/g)?.length, 1);
+  assert.equal(customerDetail.match(/<CustomerEditorDialog/g)?.length, 2);
   assert.match(customerDetail, /<CustomerUnsavedChangesDialog/);
   assert.match(
     styles,

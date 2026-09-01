@@ -1088,6 +1088,40 @@ export function WorkspaceApp() {
     setSelectedCustomer(null);
   }
 
+  function removeCustomer(customerId: string) {
+    customerFollowUpCache.delete(customerId);
+    setAttentionTarget((current) =>
+      current?.type === "customer" && current.id === customerId ? null : current,
+    );
+    setCustomerFollowUpFocusId((current) => current === customerId ? "" : current);
+    setSelectedCustomer((current) =>
+      current && String(current.id) === customerId ? null : current,
+    );
+    setData((current) => {
+      if (!current) return current;
+      const customers = current.customers.filter((item) => String(item.id) !== customerId);
+      return {
+        ...current,
+        customers,
+        contacts: current.contacts.filter((item) => String(item.customer_id) !== customerId),
+        attention: current.attention.filter(
+          (item) => !(
+            String(item.source_type || item.kind) === "customer" &&
+            String(item.source_id || item.id) === customerId
+          ),
+        ),
+        metrics: {
+          ...current.metrics,
+          existingCustomers: customers.filter((item) => item.lifecycle === "existing").length,
+          aPotentialCustomers: customers.filter(
+            (item) => item.lifecycle === "potential_customer" && item.grade === "1",
+          ).length,
+          potentialLeads: customers.filter((item) => item.lifecycle === "potential_lead").length,
+        },
+      };
+    });
+  }
+
   function applyOrderSnapshot(snapshot: Row) {
     setData((current) => {
       if (!current) return current;
@@ -1602,6 +1636,7 @@ export function WorkspaceApp() {
               (item) => item.customer_id === selectedCustomer.id,
             )}
             onSaved={applyCustomerSnapshot}
+            onDeleted={removeCustomer}
             onClose={closeSelectedCustomer}
             focusFollowUps={customerFollowUpFocusId === String(selectedCustomer.id)}
             onFollowUpsFocused={() => setCustomerFollowUpFocusId("")}
@@ -4413,6 +4448,7 @@ function CustomerDetail({
   orders,
   contacts,
   onSaved,
+  onDeleted,
   onClose,
   closeRequestRef,
   onFeedback,
@@ -4424,6 +4460,7 @@ function CustomerDetail({
   orders: Row[];
   contacts: Row[];
   onSaved: (snapshot: Row) => void;
+  onDeleted: (customerId: string) => void;
   onClose: () => void;
   closeRequestRef: MutableRefObject<(() => void) | null>;
   onFeedback: (message: string) => void;
@@ -4433,6 +4470,7 @@ function CustomerDetail({
 }) {
   const [message, setMessage] = useState("");
   const [isSaving, setIsSaving] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
   const [aiBusy, setAiBusy] = useState(false);
   const [isDirty, setIsDirty] = useState(false);
   const [saveError, setSaveError] = useState("");
@@ -4469,6 +4507,8 @@ function CustomerDetail({
   const [followUpLoadState, setFollowUpLoadState] = useState<"loading" | "ready" | "error">("loading");
   const [followUpLoadError, setFollowUpLoadError] = useState("");
   const [followUpLoadingMore, setFollowUpLoadingMore] = useState(false);
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
+  const [deleteError, setDeleteError] = useState("");
   const newContactRef = useRef<HTMLFormElement | null>(null);
   const followUpRef = useRef<HTMLFormElement | null>(null);
   const followUpSectionRef = useRef<HTMLElement | null>(null);
@@ -4478,7 +4518,7 @@ function CustomerDetail({
       (customer.lifecycle === "existing" && customer.customer_code &&
         order.customer_code === customer.customer_code),
   );
-  const busy = isSaving || aiBusy;
+  const busy = isSaving || aiBusy || isDeleting;
 
   async function loadFollowUpPage(
     offset: number,
@@ -4616,6 +4656,48 @@ function CustomerDetail({
       body: JSON.stringify({ action, customerId: customer.id, ...payload }),
     });
     return readApiJson(response, "保存失败。");
+  }
+
+  async function requestCustomerDelete() {
+    if (busy) return;
+    if (isDirty) {
+      setDeleteError("请先保存当前修改，或放弃修改后再删除客户。");
+      return;
+    }
+    setDeleteError("");
+    setIsDeleting(true);
+    try {
+      const result = await requestCustomerSave("check_delete", {});
+      if (!result.eligible) {
+        setDeleteError(String(result.message || "该客户存在关联的正式业务记录，无法删除。"));
+        return;
+      }
+      setDeleteConfirmOpen(true);
+    } catch (error) {
+      setDeleteError(error instanceof Error ? error.message : "删除检查失败，请稍后重试。");
+    } finally {
+      setIsDeleting(false);
+    }
+  }
+
+  async function deleteCustomer() {
+    if (busy) return;
+    setDeleteError("");
+    setIsDeleting(true);
+    savingRef.current = true;
+    try {
+      const result = await requestCustomerSave("delete_customer", {});
+      if (!result.deleted) throw new Error("客户删除失败，请稍后重试。");
+      customerFollowUpCache.delete(String(customer.id));
+      setDeleteConfirmOpen(false);
+      onDeleted(String(customer.id));
+      onFeedback("客户已删除");
+    } catch (error) {
+      setDeleteError(error instanceof Error ? error.message : "客户删除失败，请稍后重试。");
+    } finally {
+      savingRef.current = false;
+      setIsDeleting(false);
+    }
   }
 
   function formValues(form: HTMLFormElement) {
@@ -5397,6 +5479,25 @@ function CustomerDetail({
       </aside>
       </div>
 
+      {["existing", "potential_customer"].includes(String(customer.lifecycle)) ? (
+        <section className="editor-section customer-delete-zone">
+          <div>
+            <span>危险操作</span>
+            <h3>删除客户</h3>
+            <p>仅当该客户没有订单、售后或其他正式业务关联时，才可以永久删除。</p>
+          </div>
+          {deleteError ? <p className="inline-warning" role="alert">{deleteError}</p> : null}
+          <button
+            className="danger-button"
+            type="button"
+            disabled={busy}
+            onClick={() => void requestCustomerDelete()}
+          >
+            {isDeleting ? "检查中…" : "删除客户"}
+          </button>
+        </section>
+      ) : null}
+
       {saveError ? (
         <CustomerEditorDialog ariaLabel="保存失败" editorRoot={editorRef}>
           <h3>保存失败</h3>
@@ -5410,6 +5511,27 @@ function CustomerDetail({
               onClick={() => void saveAll()}
             >
               重新尝试保存
+            </button>
+          </div>
+        </CustomerEditorDialog>
+      ) : null}
+
+      {deleteConfirmOpen ? (
+        <CustomerEditorDialog ariaLabel="确认删除客户" editorRoot={editorRef}>
+          <h3>确认删除「{customer.company}」？</h3>
+          <p>该客户及其联系人、跟进记录等从属信息将被删除。此操作不可恢复。</p>
+          {deleteError ? <p className="inline-warning" role="alert">{deleteError}</p> : null}
+          <div className="dialog-actions">
+            <button type="button" disabled={isDeleting} onClick={() => setDeleteConfirmOpen(false)}>
+              取消
+            </button>
+            <button
+              className="danger-button confirmed"
+              type="button"
+              disabled={isDeleting}
+              onClick={() => void deleteCustomer()}
+            >
+              {isDeleting ? "正在删除…" : "确认删除"}
             </button>
           </div>
         </CustomerEditorDialog>

@@ -178,6 +178,60 @@ async function success(customerId: string, extra: Record<string, unknown> = {}) 
   });
 }
 
+type CustomerDeleteDependencies = {
+  orders: number;
+  afterSales: number;
+  tasks: number;
+  timelineEvents: number;
+};
+
+const customerDeleteGuard = `
+  AND NOT EXISTS (SELECT 1 FROM orders WHERE customer_id = ?)
+  AND NOT EXISTS (SELECT 1 FROM after_sales_cases WHERE customer_id = ?)
+  AND NOT EXISTS (SELECT 1 FROM tasks WHERE customer_id = ?)
+  AND NOT EXISTS (SELECT 1 FROM timeline_events WHERE customer_id = ?)`;
+
+function deleteGuardBindings(customerId: string) {
+  return [customerId, customerId, customerId, customerId];
+}
+
+function countFromResult(result: { results?: unknown[] } | undefined) {
+  const row = result?.results?.[0] as { count?: number | string } | undefined;
+  return Number(row?.count ?? 0);
+}
+
+async function customerDeleteDependencies(customerId: string): Promise<CustomerDeleteDependencies> {
+  const db = getD1();
+  const results = await db.batch([
+    db.prepare("SELECT COUNT(*) AS count FROM orders WHERE customer_id = ?").bind(customerId),
+    db.prepare("SELECT COUNT(*) AS count FROM after_sales_cases WHERE customer_id = ?").bind(customerId),
+    db.prepare("SELECT COUNT(*) AS count FROM tasks WHERE customer_id = ?").bind(customerId),
+    db.prepare("SELECT COUNT(*) AS count FROM timeline_events WHERE customer_id = ?").bind(customerId),
+  ]);
+  return {
+    orders: countFromResult(results[0]),
+    afterSales: countFromResult(results[1]),
+    tasks: countFromResult(results[2]),
+    timelineEvents: countFromResult(results[3]),
+  };
+}
+
+function customerDeleteBlocked(dependencies: CustomerDeleteDependencies) {
+  return Object.values(dependencies).some((count) => count > 0);
+}
+
+function customerDeleteMessage(dependencies: CustomerDeleteDependencies) {
+  const counts = [
+    ["关联订单", dependencies.orders],
+    ["关联售后", dependencies.afterSales],
+    ["关联工作", dependencies.tasks],
+    ["业务时间线", dependencies.timelineEvents],
+  ].filter(([, count]) => count > 0).map(([label, count]) => `${label}：${count}`);
+  return counts.length
+    ? `无法删除该客户。该客户存在关联的正式业务记录，请先处理关联关系。${counts.join("；")}`
+    : "该客户可以删除。";
+}
+
 export async function POST(request: Request) {
   try {
     await ensureWorkspace();
@@ -193,6 +247,74 @@ export async function POST(request: Request) {
       .bind(customerId)
       .first<Record<string, unknown>>();
     if (!customer) return errorResponse("客户不存在。", 404);
+
+    if (action === "check_delete") {
+      const dependencies = await customerDeleteDependencies(customerId);
+      return Response.json({
+        ok: true,
+        customerId,
+        eligible: !customerDeleteBlocked(dependencies),
+        dependencies,
+        message: customerDeleteMessage(dependencies),
+      });
+    }
+
+    if (action === "delete_customer") {
+      const dependencies = await customerDeleteDependencies(customerId);
+      if (customerDeleteBlocked(dependencies)) {
+        return Response.json({
+          error: customerDeleteMessage(dependencies),
+          dependencies,
+        }, { status: 409 });
+      }
+
+      const auditId = crypto.randomUUID();
+      const statements = [
+        db.prepare(`DELETE FROM contacts WHERE customer_id = ? ${customerDeleteGuard}`)
+          .bind(customerId, ...deleteGuardBindings(customerId)),
+        db.prepare(`DELETE FROM customer_follow_ups WHERE customer_id = ? ${customerDeleteGuard}`)
+          .bind(customerId, ...deleteGuardBindings(customerId)),
+        db.prepare(`DELETE FROM customer_memory WHERE customer_id = ? ${customerDeleteGuard}`)
+          .bind(customerId, ...deleteGuardBindings(customerId)),
+        db.prepare(`DELETE FROM customer_custom_fields WHERE customer_id = ? ${customerDeleteGuard}`)
+          .bind(customerId, ...deleteGuardBindings(customerId)),
+        db.prepare(`DELETE FROM customer_status_history WHERE customer_id = ? ${customerDeleteGuard}`)
+          .bind(customerId, ...deleteGuardBindings(customerId)),
+        db.prepare(`DELETE FROM legacy_records
+          WHERE target_type = 'customer' AND target_id = ? ${customerDeleteGuard}`)
+          .bind(customerId, ...deleteGuardBindings(customerId)),
+        db.prepare(`INSERT INTO audit_logs
+          (id, action, entity_type, entity_id, before_data, after_data, source)
+          SELECT ?, 'customer_deleted', 'customer', ?, ?, NULL, 'user'
+          WHERE EXISTS (SELECT 1 FROM customers WHERE id = ? AND deleted_at IS NULL)
+          ${customerDeleteGuard}`)
+          .bind(
+            auditId,
+            customerId,
+            JSON.stringify(customer),
+            customerId,
+            ...deleteGuardBindings(customerId),
+          ),
+        db.prepare(`DELETE FROM customers
+          WHERE id = ? AND deleted_at IS NULL ${customerDeleteGuard}`)
+          .bind(customerId, ...deleteGuardBindings(customerId)),
+      ];
+      const results = await db.batch(statements);
+      const customerDeleteResult = results[results.length - 1] as {
+        meta?: { changes?: number };
+      } | undefined;
+      if (Number(customerDeleteResult?.meta?.changes ?? 0) !== 1) {
+        const latestDependencies = await customerDeleteDependencies(customerId);
+        if (customerDeleteBlocked(latestDependencies)) {
+          return Response.json({
+            error: customerDeleteMessage(latestDependencies),
+            dependencies: latestDependencies,
+          }, { status: 409 });
+        }
+        return errorResponse("客户删除失败，请稍后重试。", 409);
+      }
+      return Response.json({ ok: true, customerId, deleted: true });
+    }
 
     if (action === "update_profile") {
       const company = text(payload.company, 300);

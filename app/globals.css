@@ -3295,6 +3295,44 @@ kbd {
   min-width: 64px;
 }
 
+.customer-delete-zone {
+  display: grid;
+  gap: 10px;
+  border-color: #ead2d0;
+  background: color-mix(in srgb, #fff 96%, #f8e8e6);
+}
+
+.customer-delete-zone > div {
+  display: grid;
+  gap: 3px;
+}
+
+.customer-delete-zone span {
+  color: var(--danger);
+  font-size: var(--font-label);
+  font-weight: 500;
+}
+
+.customer-delete-zone h3,
+.customer-delete-zone p {
+  margin: 0;
+}
+
+.customer-delete-zone h3 {
+  font-size: var(--font-section-title);
+  font-weight: 500;
+}
+
+.customer-delete-zone p {
+  color: var(--muted);
+  font-size: var(--font-body);
+  line-height: 1.5;
+}
+
+.customer-delete-zone > button {
+  justify-self: start;
+}
+
 .customer-editor-dialog-backdrop {
   position: fixed;
   inset: 0;
