@@ -13,6 +13,19 @@ export function sortActiveOrders(
   riskOrderIds: Set<string>,
 ) {
   return [...orders].sort((a, b) => {
+    const manualPosition = (order: OrderWorkflowRow) => {
+      const rawValue = order.open_sort_order;
+      if (rawValue === null || rawValue === undefined || rawValue === "") return null;
+      const value = Number(rawValue);
+      return Number.isFinite(value) ? value : null;
+    };
+    const aPosition = manualPosition(a);
+    const bPosition = manualPosition(b);
+    if (aPosition !== null || bPosition !== null) {
+      if (aPosition === null) return 1;
+      if (bPosition === null) return -1;
+      if (aPosition !== bPosition) return aPosition - bPosition;
+    }
     const riskDifference =
       Number(riskOrderIds.has(String(b.id))) -
       Number(riskOrderIds.has(String(a.id)));

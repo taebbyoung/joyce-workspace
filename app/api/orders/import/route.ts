@@ -91,7 +91,13 @@ async function validateGroups(sourceRows: ImportRow[]) {
 
 type ValidatedRow = Awaited<ReturnType<typeof validateGroups>>[number];
 
-function statementsForOrder(db: D1Database, row: ValidatedRow, batchId: string, now: string) {
+function statementsForOrder(
+  db: D1Database,
+  row: ValidatedRow,
+  batchId: string,
+  now: string,
+  openSortOrder: number,
+) {
   const id = crypto.randomUUID();
   const rate = row.originalCurrency === "CNY" || row.originalCurrency === "RMB"
     ? 1
@@ -104,14 +110,14 @@ function statementsForOrder(db: D1Database, row: ValidatedRow, batchId: string, 
       id, customer_id, customer_code, customer_name, order_no, pi_no, order_date, country,
       model, quantity, original_currency, original_amount, fixed_exchange_rate_to_cny, cny_amount,
       currency_status, payment_status, balance_received_date, shipment_status, expected_shipping_date,
-      estimated_delivery_date, import_batch_id, source_type, legacy_metadata, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'excel_import', ?, ?, ?)`).bind(
+      estimated_delivery_date, open_sort_order, import_batch_id, source_type, legacy_metadata, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'excel_import', ?, ?, ?)`).bind(
       id, row.customerId, row.customerCode, row.customerName, row.orderNo, row.piNo,
       row.orderDate, row.country, items.map((item) => item.description).join("；").slice(0, 300) || null,
       items.reduce((sum, item) => sum + Number(item.quantity || 0), 0) || null,
       row.originalCurrency, row.originalAmount, rate, cnyAmount,
       confirmed ? "confirmed" : "needs_confirmation", row.paymentStatus, row.balanceReceivedDate,
-      row.shipmentStatus, row.expectedShippingDate, row.estimatedDeliveryDate, batchId,
+      row.shipmentStatus, row.expectedShippingDate, row.estimatedDeliveryDate, openSortOrder, batchId,
       JSON.stringify({ importRowNumbers: row.rowNumbers, importedAt: now, warnings: row.issues }), now, now,
     ),
     ...items.map((item, index) => db.prepare(`INSERT INTO order_items
@@ -154,7 +160,19 @@ export async function POST(request: Request) {
     const db = getD1();
     const now = new Date().toISOString();
     const batchId = crypto.randomUUID();
-    for (const row of readyRows) await db.batch(statementsForOrder(db, row, batchId, now));
+    const currentMinimum = await db.prepare(`SELECT COALESCE(MIN(open_sort_order), 0) AS value
+      FROM orders
+      WHERE deleted_at IS NULL AND COALESCE(order_status, 'active') <> 'completed'`).first<{ value: number }>();
+    const minimumPosition = Number(currentMinimum?.value ?? 0);
+    for (const [index, row] of readyRows.entries()) {
+      await db.batch(statementsForOrder(
+        db,
+        row,
+        batchId,
+        now,
+        minimumPosition - (readyRows.length - index) * 100,
+      ));
+    }
     await db.prepare(`INSERT INTO audit_logs
       (id, action, entity_type, entity_id, after_data, source)
       VALUES (?, 'orders_imported', 'order_import', ?, ?, 'excel_import')`).bind(

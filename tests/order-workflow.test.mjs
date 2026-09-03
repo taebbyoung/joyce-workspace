@@ -104,6 +104,36 @@ test("active orders sort by risk, nearest workflow date, then update time", () =
   );
 });
 
+test("manual open-order positions override the historical active-order fallback", () => {
+  const orders = [
+    { id: "historical-risk", open_sort_order: null, expected_shipping_date: "2026-08-20", updated_at: "2026-08-12" },
+    { id: "manual-last", open_sort_order: 200, expected_shipping_date: "2026-08-10" },
+    { id: "manual-first", open_sort_order: 100, expected_shipping_date: "2026-10-01" },
+  ];
+  assert.deepEqual(
+    sortActiveOrders(orders, new Set(["historical-risk"])).map((order) => order.id),
+    ["manual-first", "manual-last", "historical-risk"],
+  );
+});
+
+test("open-order drag persistence is limited to incomplete orders", async () => {
+  const [route, app, migration] = await Promise.all([
+    source("app/api/orders/route.ts"),
+    source("app/WorkspaceApp.tsx"),
+    source("drizzle/0019_open_orders_manual_sort.sql"),
+  ]);
+  assert.match(migration, /ADD COLUMN open_sort_order INTEGER/);
+  assert.match(route, /action === "reorder_open"/);
+  assert.match(route, /COALESCE\(order_status, 'active'\) <> 'completed'/);
+  assert.match(route, /未完成订单列表已变化，请刷新后重试/);
+  const orderInsert = route.match(/INSERT INTO orders \(([\s\S]*?)\) VALUES \(([\s\S]*?)\)`/);
+  assert.ok(orderInsert);
+  assert.equal(orderInsert[1].split(",").length, 56);
+  assert.equal((orderInsert[2].match(/\?/g) || []).length, 56);
+  assert.match(app, /open-order-drag-handle/);
+  assert.match(app, /排序保存失败，请重试/);
+});
+
 test("monthly filters use dedicated dates only", () => {
   assert.equal(isDateInMonth("2026-08-31", "2026-08"), true);
   assert.equal(isDateInMonth("2026-09-01", "2026-08"), false);

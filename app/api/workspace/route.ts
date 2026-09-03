@@ -197,7 +197,12 @@ export async function GET() {
       all<Record<string, unknown>>(
         `SELECT * FROM orders
          WHERE deleted_at IS NULL
-         ORDER BY COALESCE(order_date, created_at) DESC LIMIT 300`,
+         ORDER BY
+           CASE WHEN COALESCE(order_status, 'active') <> 'completed' AND open_sort_order IS NOT NULL THEN 0 ELSE 1 END,
+           CASE WHEN COALESCE(order_status, 'active') <> 'completed' THEN open_sort_order END,
+           COALESCE(order_date, created_at) DESC,
+           id DESC
+         LIMIT 300`,
       ),
       all<Record<string, unknown>>(
         "SELECT * FROM order_items ORDER BY order_id, rowid",
@@ -573,9 +578,12 @@ export async function POST(request: Request) {
           `INSERT INTO orders (
             id, customer_id, customer_code, customer_name, order_no, order_date, model,
             original_currency, original_amount, fixed_exchange_rate_to_cny, cny_amount,
-            currency_status, payment_status, production_status, shipment_status,
+            currency_status, payment_status, production_status, shipment_status, open_sort_order,
             etd, eta, due_date, risk, notes, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+            (SELECT COALESCE(MIN(open_sort_order), 0) - 100 FROM orders
+             WHERE deleted_at IS NULL AND COALESCE(order_status, 'active') <> 'completed'),
+            ?, ?, ?, ?, ?, ?)`,
         )
         .bind(
           id,

@@ -984,6 +984,39 @@ export function WorkspaceApp() {
     });
   }
 
+  async function reorderOpenOrders(ids: string[]) {
+    let response: Response;
+    let result: Row;
+    try {
+      response = await fetch("/api/orders", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "reorder_open", ids }),
+      });
+      result = await readApiJson(response, "排序保存失败，请重试。");
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : "排序保存失败，请重试。");
+      return false;
+    }
+    if (!response.ok) {
+      showToast(String(result.error || "排序保存失败，请重试。"));
+      return false;
+    }
+    setData((current) => {
+      if (!current) return current;
+      const positions = new Map(ids.map((id, index) => [id, (index + 1) * 100]));
+      return {
+        ...current,
+        orders: current.orders.map((order) =>
+          positions.has(String(order.id))
+            ? { ...order, open_sort_order: positions.get(String(order.id)) }
+            : order,
+        ),
+      };
+    });
+    return true;
+  }
+
   function removeOrder(id: string) {
     setData((current) => {
       if (!current) return current;
@@ -1464,6 +1497,7 @@ export function WorkspaceApp() {
                 onOrderArchived={removeOrder}
                 onAccessorySalesSaved={applyAccessorySales}
                 onOrdersSnapshot={applyOrderSnapshot}
+                onOrderReorder={reorderOpenOrders}
                 attentionTarget={attentionTarget}
                 onAttentionTargetConsumed={consumeAttentionTarget}
               />
@@ -5730,6 +5764,7 @@ function OrdersView({
   onOrderArchived,
   onAccessorySalesSaved,
   onOrdersSnapshot,
+  onOrderReorder,
   attentionTarget,
   onAttentionTargetConsumed,
 }: {
@@ -5739,6 +5774,7 @@ function OrdersView({
   onOrderArchived: (id: string) => void;
   onAccessorySalesSaved: (entry: Row) => void;
   onOrdersSnapshot: (snapshot: Row) => void;
+  onOrderReorder: (ids: string[]) => Promise<boolean>;
   attentionTarget: AttentionTarget | null;
   onAttentionTargetConsumed: (target: AttentionTarget) => void;
 }) {
@@ -5772,6 +5808,11 @@ function OrdersView({
   const [accessoryYear, setAccessoryYear] = useState(String(new Date().getFullYear()));
   const [accessoryAmount, setAccessoryAmount] = useState("");
   const orderModalBodyRef = useRef<HTMLDivElement | null>(null);
+  const openOrderManualIdsRef = useRef<string[]>([]);
+  const openOrderDraggingIdRef = useRef("");
+  const [openOrderManualIds, setOpenOrderManualIds] = useState<string[]>([]);
+  const [openOrderDraggingId, setOpenOrderDraggingId] = useState("");
+  const [openOrderReordering, setOpenOrderReordering] = useState(false);
 
   const orderItemsByOrderId = useMemo(() => {
     const grouped = new Map<string, Row[]>();
@@ -5814,17 +5855,84 @@ function OrdersView({
   const deliveryThisMonth = completedOrders
     .filter((order) => inCurrentMonth(order.estimated_delivery_date))
     .sort((a, b) => String(a.estimated_delivery_date).localeCompare(String(b.estimated_delivery_date)));
+  const canReorderOpenOrders = activeFilter === "active" && !query.trim() && !busy && !openOrderReordering;
+  const manuallyOrderedActiveOrders = useMemo(() => {
+    if (!openOrderManualIds.length || openOrderManualIds.length !== activeOrders.length) return activeOrders;
+    const byId = new Map(activeOrders.map((order) => [String(order.id), order]));
+    if (openOrderManualIds.some((id) => !byId.has(id))) return activeOrders;
+    return openOrderManualIds.map((id) => byId.get(id) as Row);
+  }, [activeOrders, openOrderManualIds]);
   const visibleActiveOrders = activeFilter === "attention"
     ? attentionOrders
     : activeFilter === "shipping_month"
       ? shippingThisMonth
-      : activeOrders;
+      : manuallyOrderedActiveOrders;
   const completedOrdersByYear = useMemo(() => {
     return groupAttributedOrdersByYear(completedOrders, getSalesBusinessDate());
   }, [completedOrders]);
   const selectedCompletedOrders = completedOrdersTab === "delivery_month"
     ? deliveryThisMonth
     : completedOrdersByYear.find(({ year }) => year === completedOrdersTab)?.orders ?? [];
+
+  function clearOpenOrderDrag() {
+    openOrderDraggingIdRef.current = "";
+    setOpenOrderDraggingId("");
+  }
+
+  function resetOpenOrderManualOrder() {
+    openOrderManualIdsRef.current = [];
+    setOpenOrderManualIds([]);
+  }
+
+  function moveOpenOrder(orderId: string, overId: string, fallbackIds: string[]) {
+    if (!canReorderOpenOrders || orderId === overId) return;
+    const currentIds = openOrderManualIdsRef.current.length
+      ? [...openOrderManualIdsRef.current]
+      : [...fallbackIds];
+    const from = currentIds.indexOf(orderId);
+    const to = currentIds.indexOf(overId);
+    if (from < 0 || to < 0 || from === to) return;
+    currentIds.splice(from, 1);
+    currentIds.splice(to, 0, orderId);
+    openOrderManualIdsRef.current = currentIds;
+    setOpenOrderManualIds(currentIds);
+  }
+
+  function beginOpenOrderDrag(orderId: string, fallbackIds: string[]) {
+    if (!canReorderOpenOrders) return;
+    if (!openOrderManualIdsRef.current.length) {
+      openOrderManualIdsRef.current = [...fallbackIds];
+      setOpenOrderManualIds([...fallbackIds]);
+    }
+    openOrderDraggingIdRef.current = orderId;
+    setOpenOrderDraggingId(orderId);
+  }
+
+  async function finishOpenOrderDrag(fallbackIds: string[]) {
+    const draggedId = openOrderDraggingIdRef.current;
+    clearOpenOrderDrag();
+    if (!draggedId) return;
+    const ids = openOrderManualIdsRef.current.length
+      ? [...openOrderManualIdsRef.current]
+      : [...fallbackIds];
+    if (ids.every((id, index) => id === fallbackIds[index])) {
+      resetOpenOrderManualOrder();
+      return;
+    }
+    setOpenOrderReordering(true);
+    const saved = await onOrderReorder(ids);
+    setOpenOrderReordering(false);
+    resetOpenOrderManualOrder();
+    if (!saved) setMessage("排序保存失败，请重试。");
+  }
+
+  function moveOpenOrderFromPointer(event: ReactPointerEvent<HTMLButtonElement>, fallbackIds: string[]) {
+    if (event.pointerType === "mouse" || !openOrderDraggingIdRef.current) return;
+    const target = document.elementFromPoint(event.clientX, event.clientY)
+      ?.closest<HTMLElement>("[data-open-order-id]");
+    const overId = target?.dataset.openOrderId;
+    if (overId) moveOpenOrder(openOrderDraggingIdRef.current, overId, fallbackIds);
+  }
 
   function renderCompletedOrders(orders: Row[]) {
     return (
@@ -6360,8 +6468,45 @@ function OrdersView({
           {visibleActiveOrders.map((item) => {
             const risks = data.orderRisks.filter((risk) => String(risk.order_id) === String(item.id));
             const shippingDateState = getShippingDateState(item);
+            const fallbackIds = activeOrders.map((order) => String(order.id));
             return (
-              <article className="active-order-card" key={item.id}>
+              <article
+                className={`active-order-card ${openOrderDraggingId === String(item.id) ? "is-dragging" : ""}`}
+                data-open-order-id={item.id}
+                key={item.id}
+                onDragOver={(event: DragEvent<HTMLElement>) => {
+                  if (!canReorderOpenOrders || !openOrderDraggingIdRef.current) return;
+                  event.preventDefault();
+                  moveOpenOrder(openOrderDraggingIdRef.current, String(item.id), fallbackIds);
+                }}
+              >
+                {canReorderOpenOrders ? (
+                  <button
+                    className="open-order-drag-handle"
+                    type="button"
+                    draggable
+                    aria-label={`拖动调整 ${item.order_no || item.pi_no || "订单"} 的位置`}
+                    onClick={(event) => event.stopPropagation()}
+                    onDragStart={(event: DragEvent<HTMLButtonElement>) => {
+                      beginOpenOrderDrag(String(item.id), fallbackIds);
+                      event.dataTransfer.effectAllowed = "move";
+                    }}
+                    onDragEnd={() => void finishOpenOrderDrag(fallbackIds)}
+                    onPointerDown={(event) => {
+                      if (event.pointerType === "mouse") return;
+                      event.currentTarget.setPointerCapture(event.pointerId);
+                      beginOpenOrderDrag(String(item.id), fallbackIds);
+                    }}
+                    onPointerMove={(event) => moveOpenOrderFromPointer(event, fallbackIds)}
+                    onPointerUp={() => void finishOpenOrderDrag(fallbackIds)}
+                    onPointerCancel={() => {
+                      clearOpenOrderDrag();
+                      resetOpenOrderManualOrder();
+                    }}
+                  >
+                    ⠿
+                  </button>
+                ) : null}
                 <button type="button" className="active-order-main" onClick={() => openOrder(item)}>
                   <div className="active-order-header">
                     <span><strong className="order-primary-text">{item.order_no || "待补订单号"}</strong><small className="order-secondary-text">{item.pi_no ? `PI ${item.pi_no}` : "PI 待补"}</small></span>

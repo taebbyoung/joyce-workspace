@@ -255,7 +255,13 @@ export async function GET() {
     await ensureWorkspace();
     const db = getD1();
     const results = await Promise.all([
-      db.prepare("SELECT * FROM orders WHERE deleted_at IS NULL ORDER BY COALESCE(order_date, created_at) DESC LIMIT 300").all<Record<string, unknown>>(),
+      db.prepare(`SELECT * FROM orders WHERE deleted_at IS NULL
+        ORDER BY
+          CASE WHEN COALESCE(order_status, 'active') <> 'completed' AND open_sort_order IS NOT NULL THEN 0 ELSE 1 END,
+          CASE WHEN COALESCE(order_status, 'active') <> 'completed' THEN open_sort_order END,
+          COALESCE(order_date, created_at) DESC,
+          id DESC
+        LIMIT 300`).all<Record<string, unknown>>(),
       db.prepare("SELECT * FROM order_items ORDER BY order_id, rowid").all<Record<string, unknown>>(),
       db.prepare("SELECT * FROM order_payments ORDER BY order_id, payment_type, payment_date, sort_order, created_at").all<Record<string, unknown>>(),
       db.prepare("SELECT * FROM order_risks WHERE status = 'active' AND trigger_type <> 'shipment_delay' ORDER BY detected_at DESC LIMIT 500").all<Record<string, unknown>>(),
@@ -387,11 +393,19 @@ export async function POST(request: Request) {
       if (!before) return errorResponse("订单不存在。", 404);
       const completedAt = action === "complete" ? now : null;
       const orderStatus = action === "complete" ? "completed" : "active";
+      const reopenedSortOrder = action === "reopen"
+        ? Number((await db.prepare(`SELECT COALESCE(MIN(open_sort_order), 0) - 100 AS value
+            FROM orders
+            WHERE deleted_at IS NULL AND COALESCE(order_status, 'active') <> 'completed'`)
+          .first<{ value: number }>())?.value ?? -100)
+        : null;
       await db.batch([
         db.prepare(
-          `UPDATE orders SET order_status = ?, completed_at = ?, updated_at = ?
+          `UPDATE orders SET order_status = ?, completed_at = ?,
+            open_sort_order = CASE WHEN ? = 'reopen' THEN ? ELSE open_sort_order END,
+            updated_at = ?
            WHERE id = ?`,
-        ).bind(orderStatus, completedAt, now, id),
+        ).bind(orderStatus, completedAt, action, reopenedSortOrder, now, id),
         db.prepare(
           `INSERT INTO audit_logs
             (id, action, entity_type, entity_id, before_data, after_data, source)
@@ -417,6 +431,31 @@ export async function POST(request: Request) {
         db.prepare("SELECT * FROM order_risks WHERE order_id = ? AND status = 'active'").bind(id).all<Record<string, unknown>>(),
       ]);
       return Response.json({ ok: true, order, orderRisks: orderRisks.results });
+    }
+
+    if (action === "reorder_open") {
+      const receivedIds = Array.isArray(payload.ids)
+        ? payload.ids.map((id) => text(id, 100)).filter(Boolean)
+        : [];
+      const ids = [...new Set(receivedIds)];
+      if (!ids.length || ids.length !== receivedIds.length || ids.length > 300) {
+        return errorResponse("未完成订单排序数据无效。");
+      }
+      const activeOrders = await db.prepare(`SELECT id FROM orders
+        WHERE deleted_at IS NULL AND COALESCE(order_status, 'active') <> 'completed'`).all<{ id: string }>();
+      const activeIds = activeOrders.results.map((order) => String(order.id));
+      if (
+        activeIds.length !== ids.length ||
+        activeIds.some((id) => !ids.includes(id))
+      ) {
+        return errorResponse("未完成订单列表已变化，请刷新后重试。", 409);
+      }
+      await db.batch(ids.map((id, index) =>
+        db.prepare(`UPDATE orders SET open_sort_order = ?
+          WHERE id = ? AND deleted_at IS NULL AND COALESCE(order_status, 'active') <> 'completed'`)
+          .bind((index + 1) * 100, id),
+      ));
+      return Response.json({ ok: true, ids });
     }
 
     if (action === "save_payment" || action === "delete_payment") {
@@ -677,6 +716,12 @@ export async function POST(request: Request) {
         .bind(...values, id)
         .run();
     } else {
+      const initialOpenSortOrder = Number((await db.prepare(`SELECT COALESCE(MIN(open_sort_order), 0) - 100 AS value
+          FROM orders
+          WHERE deleted_at IS NULL AND COALESCE(order_status, 'active') <> 'completed'`)
+        .first<{ value: number }>())?.value ?? -100);
+      const insertValues = [...values];
+      insertValues.splice(persistedOrderFields.indexOf("completed_at") + 1, 0, initialOpenSortOrder);
       await db
         .prepare(
           `INSERT INTO orders (
@@ -685,7 +730,7 @@ export async function POST(request: Request) {
             original_amount, fixed_exchange_rate_to_cny, cny_amount, other_costs,
             currency_status, payment_status, deposit_amount, deposit_date,
             balance_amount, balance_expected_date, balance_received_date,
-            production_status, shipment_status, order_status, completed_at,
+            production_status, shipment_status, order_status, completed_at, open_sort_order,
             expected_shipping_date, estimated_delivery_date, progress_next_step,
             container_number, bl_number,
             forwarder, vessel, voyage, etd, eta, port, port_of_loading,
@@ -694,12 +739,15 @@ export async function POST(request: Request) {
             production_notes, documents, due_date,
             risk, notes, import_batch_id, source_type, updated_at, id, created_at
           ) VALUES (
-            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+            ?, ?, ?, ?, ?, ?
           )`,
         )
-        .bind(...values, id, now)
+        .bind(...insertValues, id, now)
         .run();
     }
 
