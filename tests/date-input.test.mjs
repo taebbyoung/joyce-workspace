@@ -26,7 +26,7 @@ test("Workspace date fields reuse DateInput and follow-ups keep a date-only busi
   assert.match(workspaceApp, /import \{ DateInput \} from "@\/app\/DateInput";/);
   assert.equal(
     workspaceApp.match(/<DateInput\b/g)?.length,
-    18,
+    19,
     "every current date field should use the shared control",
   );
   assert.equal(

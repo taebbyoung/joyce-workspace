@@ -98,6 +98,47 @@ export const customerStatusHistory = sqliteTable("customer_status_history", {
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
 
+export const businessDevelopmentLeads = sqliteTable("business_development_leads", {
+  id: text("id").primaryKey(),
+  companyName: text("company_name").notNull(),
+  normalizedName: text("normalized_name").notNull(),
+  country: text("country").notNull(),
+  city: text("city"),
+  website: text("website"),
+  websiteDomain: text("website_domain"),
+  linkedinCompany: text("linkedin_company"),
+  source: text("source").notNull().default("Manual"),
+  companyType: text("company_type"),
+  motoEvBusiness: text("moto_ev_business").notNull().default("Unknown"),
+  existingBrands: text("existing_brands"),
+  relevantProducts: text("relevant_products"),
+  targetModels: text("target_models"),
+  marketFit: text("market_fit"),
+  priority: text("priority").notNull().default("Medium"),
+  whyWorthDeveloping: text("why_worth_developing"),
+  riskDoubt: text("risk_doubt"),
+  status: text("status").notNull().default("research_pending"),
+  nextFollowUpDate: text("next_follow_up_date"),
+  nextStep: text("next_step"),
+  ...timestamps,
+});
+
+export const leadContacts = sqliteTable("lead_contacts", {
+  id: text("id").primaryKey(),
+  leadId: text("lead_id").notNull(),
+  name: text("name"),
+  title: text("title"),
+  email: text("email"),
+  phone: text("phone"),
+  whatsapp: text("whatsapp"),
+  wechat: text("wechat"),
+  linkedin: text("linkedin"),
+  note: text("note"),
+  isPrimary: integer("is_primary", { mode: "boolean" }).notNull().default(false),
+  decisionMakerFit: text("decision_maker_fit"),
+  ...timestamps,
+});
+
 export const orders = sqliteTable("orders", {
   id: text("id").primaryKey(),
   customerId: text("customer_id"),
