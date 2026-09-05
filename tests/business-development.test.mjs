@@ -65,16 +65,19 @@ test("Lead API validates Phase 1 fields and keeps Customer contacts isolated", a
   assert.doesNotMatch(route, /prospect_candidates|lead_development_history|convert_lead_to_potential/);
 });
 
-test("New Business Development UI remains Lead-only in Phase 1", async () => {
+test("New Business Development UI remains Lead-only and Chinese-primary in Phase 1", async () => {
   const app = await source("app/WorkspaceApp.tsx");
   const view = app.slice(app.indexOf("const leadQuickViews"), app.indexOf("const paymentStatusOptions"));
-  assert.match(app, /label: "New Business Development"/);
+  assert.match(app, /label: "新客开发"/);
   assert.match(app, /view === "leads" && <BusinessDevelopmentView/);
-  assert.match(view, /\+ 手动新增 Lead/);
-  assert.match(view, /全部 Lead/);
+  assert.match(view, /\+ 新增 Lead/);
+  assert.match(view, /全部线索/);
   assert.match(view, /今天要处理/);
-  assert.match(view, /No decision maker/);
+  assert.match(view, /暂无联系人/);
+  assert.match(view, /线索池（Lead Pool）/);
+  assert.match(view, /公司名称（Company Name）/);
+  assert.match(view, /优先级（Priority）/);
   assert.match(view, /CustomerUnsavedChangesDialog/);
   assert.match(view, /save-keeps-open|所有修改已保存/);
-  assert.doesNotMatch(view, /AI Research|AI Candidates|Touch 1|转 Potential|Development History/);
+  assert.doesNotMatch(view, /AI Research|AI Candidates|Touch 1|Development History/);
 });

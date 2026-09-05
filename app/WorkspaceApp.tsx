@@ -327,7 +327,7 @@ const navItems: Array<{ id: View; label: string; hint?: string }> = [
   { id: "home", label: "首页" },
   { id: "work", label: "工作" },
   { id: "customers", label: "客户" },
-  { id: "leads", label: "New Business Development" },
+  { id: "leads", label: "新客开发" },
   { id: "orders", label: "订单" },
   { id: "after-sales", label: "售后技术案例库" },
   { id: "knowledge", label: "知识库" },
@@ -5632,12 +5632,59 @@ function LeadsView({ data }: { data: WorkspaceData }) {
 type LeadSnapshot = { lead: Row; contacts: Row[] };
 
 const leadQuickViews = [
-  ["all", "全部 Lead"],
+  ["all", "全部线索"],
   ["due", "今天要处理"],
-  ["high", "High Priority"],
+  ["high", "高优先级"],
   ["first", "待首次开发"],
   ["replied", "已回复"],
 ] as const;
+
+const leadPriorityLabels: Record<string, string> = {
+  High: "高 · High",
+  Medium: "中 · Medium",
+  Low: "低 · Low",
+};
+const leadMarketFitLabels = leadPriorityLabels;
+const leadMotoEvBusinessLabels: Record<string, string> = {
+  Confirmed: "已确认 · Confirmed",
+  Likely: "可能 · Likely",
+  Unknown: "未确认 · Unknown",
+  No: "无相关业务 · No",
+};
+const leadCompanyTypeLabels: Record<string, string> = {
+  Importer: "进口商 · Importer",
+  Distributor: "经销商 · Distributor",
+  Dealer: "经销商 · Dealer",
+  Brand: "品牌商 · Brand",
+  Retailer: "零售商 · Retailer",
+  "Rental / Fleet": "租赁 / 车队 · Rental / Fleet",
+  "E-commerce": "电商 · E-commerce",
+  Other: "其他 · Other",
+};
+const leadSourceLabels: Record<string, string> = {
+  "Online Prospecting": "自主网络开发 · Online Prospecting",
+  "Exhibition List": "展会名单 · Exhibition List",
+  "Exhibition Contact": "展会接触 · Exhibition Contact",
+  "Info Inquiry": "Info 邮箱询盘 · Info Inquiry",
+  Referral: "转介绍 · Referral",
+  Manual: "手动录入 · Manual",
+  Other: "其他 · Other",
+};
+const leadDecisionMakerFitLabels = leadPriorityLabels;
+const leadStatusDetailLabels: Record<string, string> = {
+  research_pending: "待研究 · Research Pending",
+  first_outreach_due: "待首次开发 · First Outreach Due",
+  waiting_reply: "已开发待回复 · Waiting Reply",
+  following_up: "跟进中 · Following Up",
+  replied_pending_conversion: "已回复 · 待转 Potential",
+  paused: "暂停 · Paused",
+  abandoned: "放弃 · Abandoned",
+};
+
+function leadDisplayLabel(value: unknown, labels: Record<string, string>, fallback = "未判断") {
+  const raw = String(value || "");
+  return labels[raw] || raw || fallback;
+}
 
 function leadFormPayload(form: HTMLFormElement): Row {
   const values = new FormData(form);
@@ -5676,23 +5723,23 @@ function LeadContactFields({ contact = {} }: { contact?: Row }) {
   return (
     <>
       <div className="form-grid">
-        <label>姓名<input name="name" defaultValue={contact.name || ""} /></label>
-        <label>职位<input name="title" defaultValue={contact.title || ""} /></label>
-        <label>邮箱<input name="email" type="email" defaultValue={contact.email || ""} /></label>
-        <label>电话<input name="phone" defaultValue={contact.phone || ""} /></label>
+        <label>姓名（Name）<input name="name" defaultValue={contact.name || ""} /></label>
+        <label>职位（Title）<input name="title" defaultValue={contact.title || ""} /></label>
+        <label>邮箱（Email）<input name="email" type="email" defaultValue={contact.email || ""} /></label>
+        <label>电话（Phone）<input name="phone" defaultValue={contact.phone || ""} /></label>
         <label>WhatsApp<input name="whatsapp" defaultValue={contact.whatsapp || ""} /></label>
-        <label>微信<input name="wechat" defaultValue={contact.wechat || ""} /></label>
+        <label>微信（WeChat）<input name="wechat" defaultValue={contact.wechat || ""} /></label>
         <label>LinkedIn<input name="linkedin" defaultValue={contact.linkedin || ""} /></label>
         <label>
-          Decision Maker Fit
+          决策人匹配度（Decision Maker Fit）
           <select name="decisionMakerFit" defaultValue={contact.decision_maker_fit || ""}>
             <option value="">未判断</option>
-            {LEAD_DECISION_MAKER_FITS.map((value) => <option key={value}>{value}</option>)}
+            {LEAD_DECISION_MAKER_FITS.map((value) => <option key={value} value={value}>{leadDisplayLabel(value, leadDecisionMakerFitLabels)}</option>)}
           </select>
         </label>
       </div>
-      <label>联系人备注<textarea name="note" rows={2} defaultValue={contact.note || ""} /></label>
-      <label className="check-label"><input name="isPrimary" type="checkbox" defaultChecked={Boolean(contact.is_primary)} />设为主要联系人</label>
+      <label>备注（Note）<textarea name="note" rows={2} defaultValue={contact.note || ""} /></label>
+      <label className="check-label"><input name="isPrimary" type="checkbox" defaultChecked={Boolean(contact.is_primary)} />主联系人（Primary）</label>
     </>
   );
 }
@@ -5744,7 +5791,7 @@ function LeadDetail({
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ action, leadId: creating ? undefined : lead.id, ...payload }),
     });
-    return readApiJson(response, "Lead 保存失败，请稍后重试。");
+    return readApiJson(response, "线索保存失败，请稍后重试。");
   }
 
   async function saveLead(event: FormEvent<HTMLFormElement>) {
@@ -5758,7 +5805,7 @@ function LeadDetail({
       setIsDirty(false);
       onSaved(next, creating);
     } catch (saveError) {
-      setError(saveError instanceof Error ? saveError.message : "Lead 保存失败，请稍后重试。");
+      setError(saveError instanceof Error ? saveError.message : "线索保存失败，请稍后重试。");
     } finally {
       setIsSaving(false);
     }
@@ -5808,28 +5855,28 @@ function LeadDetail({
 
   const contactsSection = !creating ? (
     <section className="editor-section">
-      <div className="editor-heading"><div><span>CONTACTS</span><h3>联系人</h3></div><small>独立于 Customers 联系人</small></div>
+      <div className="editor-heading"><div><span>CONTACTS</span><h3>联系人（Contacts）</h3></div><small>独立于客户联系人</small></div>
       <div className="contact-editors">
         {contacts.map((contact) => (
           <details className="contact-editor" key={String(contact.id)}>
-            <summary><span><strong>{contact.name || "未命名联系人"}</strong><small>{contact.title || "未填写职位"}{contact.decision_maker_fit ? ` · ${contact.decision_maker_fit}` : ""}</small></span></summary>
+            <summary><span><strong>{contact.name || "未命名联系人"}</strong><small>{contact.title || "未填写职位"}{contact.decision_maker_fit ? ` · ${leadDisplayLabel(contact.decision_maker_fit, leadDecisionMakerFitLabels)}` : ""}</small></span></summary>
             <form onSubmit={(event) => void saveContact(event, String(contact.id))}><LeadContactFields contact={contact} /><div className="dialog-actions"><button className="danger-button" type="button" disabled={Boolean(contactBusy)} onClick={() => void deleteContact(String(contact.id))}>删除</button><button className="primary-button" type="submit" disabled={Boolean(contactBusy)}>{contactBusy === String(contact.id) ? "保存中…" : "保存联系人"}</button></div></form>
           </details>
         ))}
-        <button className="add-contact-button" type="button" disabled={Boolean(contactBusy)} onClick={() => setNewContactOpen(true)}>+ 新增联系人</button>
-        {newContactOpen ? <form className="contact-editor new" onSubmit={(event) => void saveContact(event)}><strong>新增联系人</strong><LeadContactFields /><div className="dialog-actions"><button type="button" disabled={Boolean(contactBusy)} onClick={() => setNewContactOpen(false)}>取消</button><button className="primary-button" type="submit" disabled={Boolean(contactBusy)}>{contactBusy === "new" ? "保存中…" : "保存联系人"}</button></div></form> : null}
+        <button className="add-contact-button" type="button" disabled={Boolean(contactBusy)} onClick={() => setNewContactOpen(true)}>+ 添加联系人</button>
+        {newContactOpen ? <form className="contact-editor new" onSubmit={(event) => void saveContact(event)}><strong>添加联系人</strong><LeadContactFields /><div className="dialog-actions"><button type="button" disabled={Boolean(contactBusy)} onClick={() => setNewContactOpen(false)}>取消</button><button className="primary-button" type="submit" disabled={Boolean(contactBusy)}>{contactBusy === "new" ? "保存中…" : "保存"}</button></div></form> : null}
       </div>
     </section>
   ) : null;
 
   return (
-    <Modal open title={creating ? "手动新增 Lead" : "Lead Detail"} onClose={closeGuard.requestClose} viewportFixed bodyRef={editorRoot}>
+    <Modal open title={creating ? "新增 Lead" : "Lead 详情"} onClose={closeGuard.requestClose} viewportFixed bodyRef={editorRoot}>
       <div className="lead-editor" ref={editorRoot}>
         <form ref={formRef} className="lead-editor-form" onSubmit={saveLead} onInput={refreshDirty} onChange={refreshDirty}>
           <div className="customer-editor-toolbar">
             <div>
-              <strong>{creating ? "新 Lead" : String(lead.company_name || "Lead")}</strong>
-              <small>{isDirty ? "有未保存的修改" : creating ? "填写基础资料后保存" : "所有修改已保存"}</small>
+              <strong>{creating ? "新增 Lead" : String(lead.company_name || "线索详情")}</strong>
+              <small>{isDirty ? "有未保存的修改" : creating ? "填写基础资料后保存" : [lead.country, leadDisplayLabel(lead.company_type, leadCompanyTypeLabels), lead.website_domain || lead.website].filter((value) => value && value !== "未判断").join(" · ") || "所有修改已保存"}</small>
             </div>
             <div className="customer-editor-toolbar-actions">
               <button type="button" disabled={isSaving || Boolean(contactBusy)} onClick={closeGuard.requestClose}>关闭</button>
@@ -5840,38 +5887,38 @@ function LeadDetail({
           <div className="lead-editor-columns">
             <div className="lead-editor-main">
               <section className="editor-section">
-                <div className="editor-heading"><div><span>COMPANY SNAPSHOT</span><h3>公司概况</h3></div></div>
+                <div className="editor-heading"><div><span>COMPANY SNAPSHOT</span><h3>公司概况（Company Snapshot）</h3></div></div>
                 <div className="form-grid">
-                  <label>公司名称<input name="companyName" required defaultValue={lead.company_name || ""} /></label>
-                  <label>国家<input name="country" required defaultValue={lead.country || ""} /></label>
-                  <label>城市<input name="city" defaultValue={lead.city || ""} /></label>
-                  <label>网站<input name="website" type="url" defaultValue={lead.website || ""} /></label>
-                  <label>LinkedIn Company<input name="linkedinCompany" defaultValue={lead.linkedin_company || ""} /></label>
-                  <label>来源<select name="source" defaultValue={lead.source || "Manual"}>{LEAD_SOURCES.map((value) => <option key={value}>{value}</option>)}</select></label>
-                  <label>Company Type<select name="companyType" defaultValue={lead.company_type || ""}><option value="">未判断</option>{LEAD_COMPANY_TYPES.map((value) => <option key={value}>{value}</option>)}</select></label>
+                  <label>公司名称（Company Name）<input name="companyName" required defaultValue={lead.company_name || ""} /></label>
+                  <label>国家（Country）<input name="country" required defaultValue={lead.country || ""} /></label>
+                  <label>城市（City）<input name="city" defaultValue={lead.city || ""} /></label>
+                  <label>官网（Website）<input name="website" type="url" defaultValue={lead.website || ""} /></label>
+                  <label>公司 LinkedIn（LinkedIn Company）<input name="linkedinCompany" defaultValue={lead.linkedin_company || ""} /></label>
+                  <label>来源（Source）<select name="source" defaultValue={lead.source || "Manual"}>{LEAD_SOURCES.map((value) => <option key={value} value={value}>{leadDisplayLabel(value, leadSourceLabels)}</option>)}</select></label>
+                  <label>公司类型（Company Type）<select name="companyType" defaultValue={lead.company_type || ""}><option value="">未判断</option>{LEAD_COMPANY_TYPES.map((value) => <option key={value} value={value}>{leadDisplayLabel(value, leadCompanyTypeLabels)}</option>)}</select></label>
                 </div>
-                <p className="form-note">Source 不决定 Lifecycle；是否发生真实互动才决定 Lead 或 Potential。</p>
+                <p className="form-note">来源（Source）不决定客户生命周期；是否发生真实互动才决定 Lead 或 Potential。</p>
               </section>
               <section className="editor-section">
-                <div className="editor-heading"><div><span>QUALIFICATION</span><h3>匹配度与资格判断</h3></div></div>
+                <div className="editor-heading"><div><span>QUALIFICATION</span><h3>客户匹配判断（Qualification）</h3></div></div>
                 <div className="form-grid">
-                  <label>Motorcycle / EV Business<select name="motoEvBusiness" defaultValue={lead.moto_ev_business || "Unknown"}>{LEAD_MOTO_EV_BUSINESSES.map((value) => <option key={value}>{value}</option>)}</select></label>
-                  <label>Market Fit<select name="marketFit" defaultValue={lead.market_fit || ""}><option value="">未判断</option>{LEAD_MARKET_FITS.map((value) => <option key={value}>{value}</option>)}</select></label>
-                  <label>Lead Priority<select name="priority" defaultValue={lead.priority || "Medium"}>{LEAD_PRIORITIES.map((value) => <option key={value}>{value}</option>)}</select></label>
+                  <label>摩托车 / EV 业务（Motorcycle / EV Business）<select name="motoEvBusiness" defaultValue={lead.moto_ev_business || "Unknown"}>{LEAD_MOTO_EV_BUSINESSES.map((value) => <option key={value} value={value}>{leadDisplayLabel(value, leadMotoEvBusinessLabels)}</option>)}</select></label>
+                  <label>市场匹配度（Market Fit）<select name="marketFit" defaultValue={lead.market_fit || ""}><option value="">未判断</option>{LEAD_MARKET_FITS.map((value) => <option key={value} value={value}>{leadDisplayLabel(value, leadMarketFitLabels)}</option>)}</select></label>
+                  <label>优先级（Priority）<select name="priority" defaultValue={lead.priority || "Medium"}>{LEAD_PRIORITIES.map((value) => <option key={value} value={value}>{leadDisplayLabel(value, leadPriorityLabels)}</option>)}</select></label>
                 </div>
-                <label>Existing Brands<textarea name="existingBrands" rows={2} defaultValue={lead.existing_brands || ""} /></label>
-                <label>Relevant Products<textarea name="relevantProducts" rows={2} defaultValue={lead.relevant_products || ""} /></label>
-                <label>Target Doohan Models<textarea name="targetModels" rows={2} defaultValue={lead.target_models || ""} /></label>
-                <label>Why Worth Developing<textarea name="whyWorthDeveloping" rows={4} defaultValue={lead.why_worth_developing || ""} /></label>
-                <label>Risk / Doubt<textarea name="riskDoubt" rows={4} defaultValue={lead.risk_doubt || ""} /></label>
+                <label>现有品牌（Existing Brands）<textarea name="existingBrands" rows={2} defaultValue={lead.existing_brands || ""} /></label>
+                <label>相关产品（Relevant Products）<textarea name="relevantProducts" rows={2} defaultValue={lead.relevant_products || ""} /></label>
+                <label>目标车型（Target Models）<textarea name="targetModels" rows={2} defaultValue={lead.target_models || ""} /></label>
+                <label>为什么值得开发（Why Worth Developing）<textarea name="whyWorthDeveloping" rows={4} defaultValue={lead.why_worth_developing || ""} /></label>
+                <label>风险 / 疑点（Risk / Doubt）<textarea name="riskDoubt" rows={4} defaultValue={lead.risk_doubt || ""} /></label>
               </section>
             </div>
             <aside className="lead-editor-control">
               <section className="editor-section">
-                <div className="editor-heading"><div><span>DEVELOPMENT CONTROL</span><h3>开发控制</h3></div></div>
-                <label>状态<select name="status" defaultValue={lead.status || "research_pending"}>{EDITABLE_LEAD_STATUSES.map((value) => <option key={value} value={value}>{leadStatusLabels[value]}</option>)}</select></label>
-                <label>Next Follow-up Date<DateInput name="nextFollowUpDate" defaultValue={String(lead.next_follow_up_date || "").slice(0, 10)} /></label>
-                <label>Next Step<textarea name="nextStep" rows={5} defaultValue={lead.next_step || ""} /></label>
+                <div className="editor-heading"><div><span>DEVELOPMENT CONTROL</span><h3>开发控制（Development Control）</h3></div></div>
+                <label>状态（Status）<select name="status" defaultValue={lead.status || "research_pending"}>{EDITABLE_LEAD_STATUSES.map((value) => <option key={value} value={value}>{leadStatusDetailLabels[value] || leadStatusLabels[value]}</option>)}</select></label>
+                <label>下次跟进（Next Follow-up）<DateInput name="nextFollowUpDate" defaultValue={String(lead.next_follow_up_date || "").slice(0, 10)} /></label>
+                <label>下一步（Next Step）<textarea name="nextStep" rows={5} defaultValue={lead.next_step || ""} /></label>
               </section>
             </aside>
           </div>
@@ -5903,10 +5950,10 @@ function BusinessDevelopmentView() {
     setLoading(true);
     setError("");
     try {
-      const result = await readApiJson(await fetch("/api/leads"), "Lead Pool 加载失败。");
+      const result = await readApiJson(await fetch("/api/leads"), "线索池加载失败。");
       setLeads(Array.isArray(result.leads) ? result.leads : []);
     } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : "Lead Pool 加载失败。");
+      setError(loadError instanceof Error ? loadError.message : "线索池加载失败。");
     } finally {
       setLoading(false);
     }
@@ -5934,10 +5981,10 @@ function BusinessDevelopmentView() {
 
   async function openLead(leadId: string) {
     try {
-      const result = await readApiJson(await fetch(`/api/leads?id=${encodeURIComponent(leadId)}`), "Lead 打开失败。");
+      const result = await readApiJson(await fetch(`/api/leads?id=${encodeURIComponent(leadId)}`), "线索打开失败。");
       setSelected({ lead: result.lead, contacts: Array.isArray(result.contacts) ? result.contacts : [] });
     } catch (openError) {
-      setError(openError instanceof Error ? openError.message : "Lead 打开失败。");
+      setError(openError instanceof Error ? openError.message : "线索打开失败。");
     }
   }
 
@@ -5952,7 +5999,7 @@ function BusinessDevelopmentView() {
 
   return (
     <div className="view-stack">
-      <SectionTitle eyebrow="NEW BUSINESS DEVELOPMENT" title="New Business Development" detail="Phase 1 · Lead Pool" action={<button className="primary-button" type="button" onClick={() => setCreating(true)}>+ 手动新增 Lead</button>} />
+      <SectionTitle eyebrow="新客开发" title="线索池（Lead Pool）" action={<button className="primary-button" type="button" onClick={() => setCreating(true)}>+ 新增 Lead</button>} />
       <div className="lead-quick-views" role="tablist" aria-label="Lead 快捷视图">
         {leadQuickViews.map(([id, label]) => <button key={id} type="button" className={quickView === id ? "active" : ""} onClick={() => setQuickView(id)}>{label}</button>)}
       </div>
@@ -5960,30 +6007,30 @@ function BusinessDevelopmentView() {
         <div className="lead-pool-filters">
           <input aria-label="搜索 Lead" placeholder="搜索公司、网站、联系人或邮箱" value={query} onChange={(event) => setQuery(event.target.value)} />
           <select aria-label="状态" value={status} onChange={(event) => setStatus(event.target.value)}><option value="all">全部状态</option>{EDITABLE_LEAD_STATUSES.map((value) => <option key={value} value={value}>{leadStatusLabel(value)}</option>)}</select>
-          <select aria-label="优先级" value={priority} onChange={(event) => setPriority(event.target.value)}><option value="all">全部优先级</option>{LEAD_PRIORITIES.map((value) => <option key={value}>{value}</option>)}</select>
+          <select aria-label="优先级" value={priority} onChange={(event) => setPriority(event.target.value)}><option value="all">全部优先级</option>{LEAD_PRIORITIES.map((value) => <option key={value} value={value}>{leadDisplayLabel(value, leadPriorityLabels)}</option>)}</select>
           <select aria-label="国家" value={country} onChange={(event) => setCountry(event.target.value)}><option value="all">全部国家</option>{countries.map((value) => <option key={value}>{value}</option>)}</select>
-          <select aria-label="来源" value={source} onChange={(event) => setSource(event.target.value)}><option value="all">全部来源</option>{LEAD_SOURCES.map((value) => <option key={value}>{value}</option>)}</select>
-          <select aria-label="Motorcycle 或 EV" value={motoEvBusiness} onChange={(event) => setMotoEvBusiness(event.target.value)}><option value="all">全部 Motorcycle / EV</option>{LEAD_MOTO_EV_BUSINESSES.map((value) => <option key={value}>{value}</option>)}</select>
+          <select aria-label="来源" value={source} onChange={(event) => setSource(event.target.value)}><option value="all">全部来源</option>{LEAD_SOURCES.map((value) => <option key={value} value={value}>{leadDisplayLabel(value, leadSourceLabels)}</option>)}</select>
+          <select aria-label="摩托车或 EV 业务" value={motoEvBusiness} onChange={(event) => setMotoEvBusiness(event.target.value)}><option value="all">全部摩托车 / EV 业务</option>{LEAD_MOTO_EV_BUSINESSES.map((value) => <option key={value} value={value}>{leadDisplayLabel(value, leadMotoEvBusinessLabels)}</option>)}</select>
           <input aria-label="目标车型" placeholder="筛选目标车型" value={targetModel} onChange={(event) => setTargetModel(event.target.value)} />
         </div>
         {error ? <p className="inline-warning" role="alert">{error}</p> : null}
-        {loading ? <p className="muted-copy">正在加载 Lead Pool…</p> : (
+        {loading ? <p className="muted-copy">正在加载线索池…</p> : (
           <div className="lead-pool-table">
-            <div className="lead-pool-head"><span>Priority</span><span>Company</span><span>Match</span><span>Contact</span><span>Status</span><span>Next</span><span>Source</span></div>
+            <div className="lead-pool-head"><span>优先级</span><span>公司</span><span>匹配度</span><span>联系人</span><span>状态</span><span>下一步</span><span>来源</span></div>
             {filtered.map((lead) => {
               const next = String(lead.next_follow_up_date || "").slice(0, 10);
               const overdue = Boolean(next && next < today);
               return <button className="lead-pool-row" type="button" key={String(lead.id)} onClick={() => void openLead(String(lead.id))}>
-                <span className={`lead-priority ${String(lead.priority || "Medium").toLowerCase()}`}>{lead.priority || "Medium"}</span>
-                <span><strong>{lead.company_name}</strong><small>{[lead.country, lead.company_type].filter(Boolean).join(" · ") || "—"}</small><small>{lead.website_domain || lead.website || "—"}</small></span>
-                <span><strong>Motorcycle / EV: {lead.moto_ev_business || "Unknown"}</strong><small>Target: {lead.target_models || "—"}</small>{lead.existing_brands ? <small>Brands: {lead.existing_brands}</small> : null}</span>
-                <span>{lead.primary_contact_name ? <><strong>{lead.primary_contact_name}</strong><small>{lead.primary_contact_title || "—"}</small><small>{lead.primary_contact_email ? "Email ✓" : ""}{lead.primary_contact_email && lead.primary_contact_linkedin ? " · " : ""}{lead.primary_contact_linkedin ? "LinkedIn ✓" : ""}</small></> : <small>No decision maker</small>}</span>
+                <span className={`lead-priority ${String(lead.priority || "Medium").toLowerCase()}`}>{leadDisplayLabel(lead.priority, leadPriorityLabels, "中 · Medium")}</span>
+                <span><strong>{lead.company_name}</strong><small>{[lead.country, lead.company_type ? leadDisplayLabel(lead.company_type, leadCompanyTypeLabels) : ""].filter(Boolean).join(" · ") || "—"}</small><small>{lead.website_domain || lead.website || "—"}</small></span>
+                <span><strong>摩托车 / EV：{leadDisplayLabel(lead.moto_ev_business, leadMotoEvBusinessLabels, "未确认 · Unknown")}</strong><small>目标车型：{lead.target_models || "—"}</small>{lead.existing_brands ? <small>品牌：{lead.existing_brands}</small> : null}</span>
+                <span>{lead.primary_contact_name ? <><strong>{lead.primary_contact_name}</strong><small>{lead.primary_contact_title || "—"}</small><small>{lead.primary_contact_email ? "Email ✓" : ""}{lead.primary_contact_email && lead.primary_contact_linkedin ? " · " : ""}{lead.primary_contact_linkedin ? "LinkedIn ✓" : ""}</small></> : <small>暂无联系人</small>}</span>
                 <span><strong>{leadStatusLabel(lead.status)}</strong></span>
-                <span><strong className={overdue ? "lead-overdue" : ""}>{next ? `${overdue ? "Overdue · " : ""}${formatDate(next)}` : "—"}</strong><small>{lead.next_step || "—"}</small></span>
-                <span><small>{lead.source || "Manual"}</small></span>
+                <span><strong className={overdue ? "lead-overdue" : ""}>{next ? `${overdue ? "逾期 · " : ""}${formatDate(next)}` : "—"}</strong><small>{lead.next_step || "—"}</small></span>
+                <span><small>{leadDisplayLabel(lead.source, leadSourceLabels, "手动录入 · Manual")}</small></span>
               </button>;
             })}
-            {!filtered.length ? <p className="muted-copy">暂无匹配 Lead。可手动新增第一条冷开发 Lead。</p> : null}
+            {!filtered.length ? <p className="muted-copy">暂无匹配线索<br />可先新增一家公司开始开发。</p> : null}
           </div>
         )}
       </section>
