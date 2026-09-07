@@ -26,6 +26,27 @@ test("single-task writes use an abortable local request and do not reload Worksp
   assert.match(updateSource, /return \{ ok: true, task: result\.task \}/);
 });
 
+test("Home Today reuses the official Work completion mutation with rollback feedback", async () => {
+  const app = await source("app/WorkspaceApp.tsx");
+  const homeStart = app.indexOf("function HomeView(");
+  const workStart = app.indexOf("function WorkView(", homeStart);
+  const home = app.slice(homeStart, workStart);
+  const homeMountStart = app.indexOf("{view === \"home\" && (");
+  const homeMountEnd = app.indexOf("{view === \"work\" && (", homeMountStart);
+  const homeMount = app.slice(homeMountStart, homeMountEnd);
+
+  assert.match(app, /async function completeHomeTodayTask\(id: string\)/);
+  assert.match(app, /updateTask\(id, "status", \{ status: "completed" \}\)/);
+  assert.match(homeMount, /onTaskComplete=\{completeHomeTodayTask\}/);
+  assert.match(homeMount, /onOpenTask=\{openTaskFromHome\}/);
+  assert.match(home, /aria-label=\{`完成任务：\$\{task\.title\}`\}/);
+  assert.match(home, /onChange=\{\(\) => void completeTodayTask\(task\)\}/);
+  assert.match(home, /onClick=\{\(\) => onOpenTask\(task\)\}/);
+  assert.match(home, /完成失败，请重试/);
+  assert.match(home, /setCompletingTodayTasks/);
+  assert.doesNotMatch(home, /loadWorkspace/);
+});
+
 test("Work edit and snooze keep a retryable form while exposing saving and slow states", async () => {
   const app = await source("app/WorkspaceApp.tsx");
   const workStart = app.indexOf("function WorkView(");

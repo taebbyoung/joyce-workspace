@@ -736,23 +736,6 @@ export function WorkspaceApp() {
     setRecordDefaults({});
   }
 
-  async function updateTaskStatus(id: string, status: string) {
-    const response = await fetch("/api/tasks", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ action: "status", id, status }),
-    });
-    if (response.ok) {
-      const result = await response.json();
-      setData((current) =>
-        current ? updateTaskCollections(current, id, result.task ?? { status }) : current,
-      );
-    } else {
-      const result = await response.json();
-      showToast(result.error || "任务更新失败。");
-    }
-  }
-
   async function updateTask(
     id: string,
     action: string,
@@ -844,6 +827,31 @@ export function WorkspaceApp() {
       return updateTaskCollections(current, id, changed);
     });
     return { ok: true, task: result.task };
+  }
+
+  async function completeHomeTodayTask(id: string): Promise<TaskActionResult> {
+    const result = await updateTask(id, "status", { status: "completed" });
+    if (
+      result.ok &&
+      result.task &&
+      ["completed", "已完成", "Completed"].includes(String(result.task.status))
+    ) {
+      setCompletedTasksState((current) =>
+        current.data
+          ? resolveAsyncData({
+              ...current.data,
+              tasks: [
+                result.task,
+                ...current.data.tasks.filter(
+                  (task) => String(task.id) !== String(result.task?.id),
+                ),
+              ],
+              offset: current.data.offset + 1,
+            })
+          : current,
+      );
+    }
+    return result;
   }
 
   async function reorderWork(
@@ -1395,6 +1403,11 @@ export function WorkspaceApp() {
     navigateTo(targetView);
   }
 
+  function openTaskFromHome(task: Row) {
+    setAttentionTarget({ type: "task", id: String(task.id) });
+    navigateTo("work");
+  }
+
   return (
     <div className="workspace-shell">
       <aside className="sidebar">
@@ -1469,7 +1482,8 @@ export function WorkspaceApp() {
             {view === "home" && (
               <HomeView
                 data={data}
-                onTaskStatus={updateTaskStatus}
+                onTaskComplete={completeHomeTodayTask}
+                onOpenTask={openTaskFromHome}
                 onNavigate={setView}
                 onOpenAttention={openAttentionTarget}
                 onAcknowledgeRisk={acknowledgeOrderRisk}
@@ -1705,13 +1719,15 @@ export function WorkspaceApp() {
 
 function HomeView({
   data,
-  onTaskStatus,
+  onTaskComplete,
+  onOpenTask,
   onNavigate,
   onOpenAttention,
   onAcknowledgeRisk,
 }: {
   data: WorkspaceData;
-  onTaskStatus: (id: string, status: string) => void;
+  onTaskComplete: (id: string) => Promise<TaskActionResult>;
+  onOpenTask: (task: Row) => void;
   onNavigate: (view: View) => void;
   onOpenAttention: (item: Row) => void;
   onAcknowledgeRisk: (id: string) => void;
@@ -1724,8 +1740,37 @@ function HomeView({
   const colors = ["#315f52", "#729386", "#a9bbb4", "#d9e2de", "#b08a62"];
   const homeAttention = groupHomeAttention(data.attention);
   const [allAttentionOpen, setAllAttentionOpen] = useState(false);
+  const [completingTodayTasks, setCompletingTodayTasks] = useState<Record<string, Row>>({});
+  const [todayCompletionError, setTodayCompletionError] = useState("");
   const visibleAttention = homeAttention.visibleItems;
   const attentionToday = localDateText(new Date());
+  const displayedTodayTasks = [
+    ...data.todayTasks.filter((task) => !completingTodayTasks[String(task.id)]),
+    ...Object.values(completingTodayTasks),
+  ].slice(0, 6);
+
+  async function completeTodayTask(task: Row) {
+    const id = String(task.id);
+    if (completingTodayTasks[id]) return;
+    setTodayCompletionError("");
+    setCompletingTodayTasks((current) => ({ ...current, [id]: task }));
+    const result = await onTaskComplete(id);
+    if (!result.ok) {
+      setCompletingTodayTasks((current) => {
+        const { [id]: _completedTask, ...remaining } = current;
+        return remaining;
+      });
+      setTodayCompletionError("完成失败，请重试");
+      return;
+    }
+    window.setTimeout(() => {
+      setCompletingTodayTasks((current) => {
+        const { [id]: _completedTask, ...remaining } = current;
+        return remaining;
+      });
+    }, 380);
+  }
+
   function renderAttentionItem(item: Row, fromFullList = false) {
     return (
       <div
@@ -1882,28 +1927,35 @@ function HomeView({
               查看工作
             </button>
           </div>
-          {data.todayTasks.length ? (
+          {displayedTodayTasks.length ? (
             <div className="task-list">
-              {data.todayTasks.slice(0, 6).map((task) => (
-                <label key={task.id}>
+              {displayedTodayTasks.map((task) => {
+                const completing = Boolean(completingTodayTasks[String(task.id)]);
+                return (
+                <div
+                  className={`task-list-item${completing ? " is-completing" : ""}`}
+                  key={task.id}
+                >
                   <input
                     type="checkbox"
-                    checked={["已完成", "completed"].includes(task.status)}
-                    onChange={(event) =>
-                      onTaskStatus(
-                        task.id,
-                        event.target.checked ? "completed" : "pending",
-                      )
-                    }
+                    aria-label={`完成任务：${task.title}`}
+                    checked={completing}
+                    disabled={completing}
+                    onChange={() => void completeTodayTask(task)}
                   />
-                  <span>
+                  <button
+                    className="home-today-task-open"
+                    type="button"
+                    onClick={() => onOpenTask(task)}
+                  >
                     <strong>{task.title}</strong>
                     <small>
                       {formatDate(task.due_date)} · {task.priority}
                     </small>
-                  </span>
-                </label>
-              ))}
+                  </button>
+                </div>
+                );
+              })}
             </div>
           ) : (
             <EmptyState
@@ -1911,6 +1963,11 @@ function HomeView({
               detail="用随手记写下一件事，我会把清晰的低风险任务放到这里。"
             />
           )}
+          {todayCompletionError ? (
+            <p className="task-list-completion-error" role="status">
+              {todayCompletionError}
+            </p>
+          ) : null}
         </article>
 
         <article className="plain-panel attention-panel">
