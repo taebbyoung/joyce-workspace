@@ -431,6 +431,40 @@ test("customer follow-ups are explicitly recorded, lightweight, and local", () =
   assert.match(migration, /backup_v58_customer_memory_contact_notes_20260819/);
 });
 
+test("a new potential-customer follow-up updates the current date without rewriting history decisions", () => {
+  const app = fs.readFileSync(path.join(root, "app/WorkspaceApp.tsx"), "utf8");
+  const route = fs.readFileSync(path.join(root, "app/api/customers/route.ts"), "utf8");
+  const customerDetail = app.slice(
+    app.indexOf("function CustomerDetail"),
+    app.indexOf("function LeadsView"),
+  );
+  const recordFollowUp = route.slice(
+    route.indexOf('if (action === "record_follow_up")'),
+    route.indexOf('if (action === "update_follow_up")'),
+  );
+  const historicalFollowUpChanges = route.slice(
+    route.indexOf('if (action === "update_follow_up")'),
+    route.indexOf('if (action === "save_contact")'),
+  );
+
+  assert.match(
+    customerDetail,
+    /下次跟进日期[\s\S]*value=\{nextFollow\}[\s\S]*setNextFollow/,
+  );
+  assert.match(
+    customerDetail,
+    /下次跟进[\s\S]*nextFollow \? formatDate\(nextFollow\) : "未设置"/,
+  );
+  assert.match(
+    customerDetail,
+    /record_follow_up[\s\S]*setNextFollow\(String\(result\.snapshot\.customer\?\.next_follow \|\| ""\)\.slice\(0, 10\)\)/,
+  );
+  assert.match(recordFollowUp, /await db\.batch\(statements\)/);
+  assert.match(recordFollowUp, /next_follow = CASE WHEN \? IS NOT NULL THEN \? ELSE next_follow END/);
+  assert.doesNotMatch(recordFollowUp, /recomputeNextFollow/);
+  assert.doesNotMatch(historicalFollowUpChanges, /next_follow\s*=|recomputeNextFollow/);
+});
+
 test("AI suggestions remain UI-only until Joyce adopts and saves", () => {
   const app = fs.readFileSync(path.join(root, "app/WorkspaceApp.tsx"), "utf8");
   const customerDetail = app.slice(

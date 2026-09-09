@@ -4995,7 +4995,10 @@ function CustomerDetail({
     try {
       const values = formValues(form);
       const result = await requestCustomerSave("record_follow_up", values);
-      if (result.snapshot) onSaved(result.snapshot);
+      if (result.snapshot) {
+        onSaved(result.snapshot);
+        setNextFollow(String(result.snapshot.customer?.next_follow || "").slice(0, 10));
+      }
       const created = result.followUp as Row | undefined;
       const total = followUpTotal + 1;
       setFollowUps((current) => {

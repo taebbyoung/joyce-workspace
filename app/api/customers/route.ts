@@ -118,26 +118,6 @@ async function recomputeLastFollow(
   return lastFollow;
 }
 
-async function recomputeNextFollow(customerId: string, now: string) {
-  const db = getD1();
-  const latest = await db
-    .prepare(
-      `SELECT next_follow_up_date
-       FROM customer_follow_ups
-       WHERE customer_id = ?
-       ORDER BY follow_up_at DESC, created_at DESC
-       LIMIT 1`,
-    )
-    .bind(customerId)
-    .first<{ next_follow_up_date: string | null }>();
-  const nextFollow = String(latest?.next_follow_up_date || "").slice(0, 10) || null;
-  await db
-    .prepare("UPDATE customers SET next_follow = ?, updated_at = ? WHERE id = ?")
-    .bind(nextFollow, now, customerId)
-    .run();
-  return nextFollow;
-}
-
 export async function GET(request: Request) {
   try {
     await ensureWorkspace();
@@ -468,10 +448,20 @@ export async function POST(request: Request) {
           (id, customer_id, follow_up_at, content, next_follow_up_date, channel, created_at, updated_at)
           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
           .bind(followUpId, customerId, followUpDate, content, nextFollowUpDate || null, nullable(payload.channel, 40), now, now),
+        db.prepare(
+          `UPDATE customers
+           SET last_follow = (
+                 SELECT MAX(follow_up_at) FROM customer_follow_ups WHERE customer_id = ?
+               ),
+               last_contact_at = (
+                 SELECT MAX(follow_up_at) FROM customer_follow_ups WHERE customer_id = ?
+               ),
+               next_follow = CASE WHEN ? IS NOT NULL THEN ? ELSE next_follow END,
+               updated_at = ?
+           WHERE id = ?`,
+        ).bind(customerId, customerId, nextFollowUpDate || null, nextFollowUpDate || null, now, customerId),
       ];
       await db.batch(statements);
-      await recomputeLastFollow(customerId, now);
-      await recomputeNextFollow(customerId, now);
       const followUp = await db
         .prepare("SELECT * FROM customer_follow_ups WHERE id = ? AND customer_id = ?")
         .bind(followUpId, customerId)
@@ -503,7 +493,6 @@ export async function POST(request: Request) {
         .bind(followUpDate, content, nextFollowUpDate || null, now, followUpId, customerId)
         .run();
       await recomputeLastFollow(customerId, now);
-      await recomputeNextFollow(customerId, now);
       const followUp = await db
         .prepare("SELECT * FROM customer_follow_ups WHERE id = ? AND customer_id = ?")
         .bind(followUpId, customerId)
@@ -529,7 +518,6 @@ export async function POST(request: Request) {
         .bind(followUpId, customerId)
         .run();
       await recomputeLastFollow(customerId, now);
-      await recomputeNextFollow(customerId, now);
       await audit("customer_follow_up_deleted", "customer_follow_up", followUpId, before, null);
       return success(customerId, { followUpId });
     }
