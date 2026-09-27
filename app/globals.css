@@ -619,6 +619,21 @@ kbd {
   font-size: var(--font-meta);
 }
 
+.task-completion-pending,
+.task-completion-error {
+  display: block;
+  margin: 5px 0 0;
+  font-size: var(--font-meta);
+}
+
+.task-completion-pending {
+  color: var(--text-secondary);
+}
+
+.task-completion-error {
+  color: var(--danger, #a13b36);
+}
+
 .task-list input,
 .work-row > input,
 .risk-confirm input {

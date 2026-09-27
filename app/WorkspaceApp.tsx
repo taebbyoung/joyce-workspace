@@ -153,6 +153,21 @@ function taskWriteErrorMessage(error: unknown, fallback: string) {
   return message || fallback;
 }
 
+function taskCompletionFailureMessage(task: Row | undefined, error: unknown) {
+  const title = String(task?.title || "该任务");
+  const message = error instanceof Error ? error.message : String(error || "");
+  if (message === "TASK_WRITE_TIMEOUT") {
+    return `“${title}”未完成：保存超时，请重试`;
+  }
+  if (
+    (typeof navigator !== "undefined" && !navigator.onLine) ||
+    /failed to fetch|networkerror|network request failed/i.test(message)
+  ) {
+    return `“${title}”未完成：网络异常，请重试`;
+  }
+  return `“${title}”未完成：保存失败，请重试`;
+}
+
 async function postWorkMutation(endpoint: string, payload: Row) {
   const controller = new AbortController();
   let timedOut = false;
@@ -742,6 +757,7 @@ export function WorkspaceApp() {
     fields: Row = {},
   ): Promise<TaskActionResult> {
     const previousTask = data?.tasks.find((task) => String(task.id) === id);
+    const isCompletion = action === "status" && fields.status === "completed";
     const previousTodayTask = data?.todayTasks.find(
       (task) => String(task.id) === id,
     );
@@ -780,7 +796,7 @@ export function WorkspaceApp() {
           ...(action === "restore_trash" ? { deleted_at: null, purge_after: null } : {}),
         }
       : null;
-    if (optimisticTask) {
+    if (optimisticTask && !isCompletion) {
       setData((current) =>
         current
           ? updateTaskCollections(current, id, optimisticTask)
@@ -792,7 +808,9 @@ export function WorkspaceApp() {
       response = await postWorkMutation("/api/tasks", { action, id, ...fields });
     } catch (error) {
       restorePreviousTask();
-      const message = taskWriteErrorMessage(error, "任务更新失败，请稍后重试。");
+      const message = isCompletion
+        ? taskCompletionFailureMessage(previousTask, error)
+        : taskWriteErrorMessage(error, "任务更新失败，请稍后重试。");
       showToast(message);
       return { ok: false, error: message };
     }
@@ -801,15 +819,22 @@ export function WorkspaceApp() {
       result = await readApiJson(response, "任务更新失败，请稍后重试。");
     } catch (error) {
       restorePreviousTask();
-      const message = taskWriteErrorMessage(error, "任务更新失败，请稍后重试。");
+      const message = isCompletion
+        ? taskCompletionFailureMessage(previousTask, error)
+        : taskWriteErrorMessage(error, "任务更新失败，请稍后重试。");
       showToast(message);
       return { ok: false, error: message };
     }
     if (!response.ok) {
       restorePreviousTask();
-      const message = response.status >= 500
-        ? "更新失败，请稍后重试。"
-        : String(result.error || "任务更新失败。");
+      const message = isCompletion
+        ? taskCompletionFailureMessage(
+            previousTask,
+            new Error(String(result.error || "TASK_WRITE_FAILED")),
+          )
+        : response.status >= 500
+          ? "更新失败，请稍后重试。"
+          : String(result.error || "任务更新失败。");
       showToast(message);
       return { ok: false, error: message };
     }
@@ -1741,7 +1766,7 @@ function HomeView({
   const homeAttention = groupHomeAttention(data.attention);
   const [allAttentionOpen, setAllAttentionOpen] = useState(false);
   const [completingTodayTasks, setCompletingTodayTasks] = useState<Record<string, Row>>({});
-  const [todayCompletionError, setTodayCompletionError] = useState("");
+  const [todayCompletionErrors, setTodayCompletionErrors] = useState<Record<string, string>>({});
   const visibleAttention = homeAttention.visibleItems;
   const attentionToday = localDateText(new Date());
   const displayedTodayTasks = [
@@ -1752,7 +1777,10 @@ function HomeView({
   async function completeTodayTask(task: Row) {
     const id = String(task.id);
     if (completingTodayTasks[id]) return;
-    setTodayCompletionError("");
+    setTodayCompletionErrors((current) => {
+      const { [id]: _previousError, ...remaining } = current;
+      return remaining;
+    });
     setCompletingTodayTasks((current) => ({ ...current, [id]: task }));
     const result = await onTaskComplete(id);
     if (!result.ok) {
@@ -1760,7 +1788,7 @@ function HomeView({
         const { [id]: _completedTask, ...remaining } = current;
         return remaining;
       });
-      setTodayCompletionError("完成失败，请重试");
+      setTodayCompletionErrors((current) => ({ ...current, [id]: result.error }));
       return;
     }
     window.setTimeout(() => {
@@ -1950,9 +1978,17 @@ function HomeView({
                   >
                     <strong>{task.title}</strong>
                     <small>
-                      {formatDate(task.due_date)} · {task.priority}
+                      {completing
+                        ? "正在完成…"
+                        : formatDate(task.due_date)}
+                      {!completing ? ` · ${task.priority}` : ""}
                     </small>
                   </button>
+                  {!completing && todayCompletionErrors[String(task.id)] ? (
+                    <p className="task-list-completion-error" role="alert">
+                      {todayCompletionErrors[String(task.id)]}
+                    </p>
+                  ) : null}
                 </div>
                 );
               })}
@@ -1963,11 +1999,6 @@ function HomeView({
               detail="用随手记写下一件事，我会把清晰的低风险任务放到这里。"
             />
           )}
-          {todayCompletionError ? (
-            <p className="task-list-completion-error" role="status">
-              {todayCompletionError}
-            </p>
-          ) : null}
         </article>
 
         <article className="plain-panel attention-panel">
@@ -2067,6 +2098,7 @@ function WorkView({
   const [busyTaskId, setBusyTaskId] = useState("");
   const [slowTaskId, setSlowTaskId] = useState("");
   const [taskWriteError, setTaskWriteError] = useState("");
+  const [taskCompletionErrors, setTaskCompletionErrors] = useState<Record<string, string>>({});
   const [manualOrders, setManualOrders] = useState<Record<string, string[]>>({});
   const manualOrdersRef = useRef<Record<string, string[]>>({});
   const draggingRef = useRef<{ scope: string; id: string } | null>(null);
@@ -2420,14 +2452,24 @@ function WorkView({
 
   async function act(task: Row, action: string, fields: Row = {}) {
     const id = String(task.id);
+    const isCompletion = action === "status" && fields.status === "completed";
     if (busyTaskId === id) return false;
     setTaskWriteError("");
+    if (isCompletion) {
+      setTaskCompletionErrors((current) => {
+        const { [id]: _previousError, ...remaining } = current;
+        return remaining;
+      });
+    }
     setBusyTaskId(id);
     const slowTimer = window.setTimeout(() => setSlowTaskId(id), TASK_WRITE_SLOW_MS);
     try {
       const result = await onTaskAction(id, action, fields);
       if (!result.ok) {
         setTaskWriteError(result.error);
+        if (isCompletion) {
+          setTaskCompletionErrors((current) => ({ ...current, [id]: result.error }));
+        }
         return false;
       }
       if (
@@ -2594,6 +2636,8 @@ function WorkView({
   function renderOverviewTask(task: Row, scope: string, items: Row[]) {
     const fallbackIds = items.map((item) => String(item.id));
     const section = scope === "today" ? "today" : "upcoming";
+    const completing = busyTaskId === String(task.id);
+    const completionError = taskCompletionErrors[String(task.id)];
     return (
       <div
         className={`overview-task-row ${
@@ -2656,6 +2700,10 @@ function WorkView({
           >
             {task.next_action || task.notes || "未设置下一步"}
           </button>
+          {completing ? <small className="task-completion-pending">正在完成…</small> : null}
+          {!completing && completionError ? (
+            <p className="task-completion-error" role="alert">{completionError}</p>
+          ) : null}
         </div>
         <div className="overview-task-actions">
           <button

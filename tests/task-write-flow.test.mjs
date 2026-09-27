@@ -8,7 +8,7 @@ async function source(path) {
   return readFile(new URL(path, root), "utf8");
 }
 
-test("single-task writes use an abortable local request and do not reload Workspace", async () => {
+test("task completion waits for the server while other single-task writes stay local", async () => {
   const app = await source("app/WorkspaceApp.tsx");
   const updateStart = app.indexOf("async function updateTask(");
   const updateEnd = app.indexOf("async function reorderWork", updateStart);
@@ -20,13 +20,16 @@ test("single-task writes use an abortable local request and do not reload Worksp
   assert.match(app, /signal: controller\.signal/);
   assert.match(app, /taskPatchForLocalState/);
   assert.match(app, /patch\.status = "snoozed"/);
+  assert.match(app, /function taskCompletionFailureMessage/);
   assert.match(updateSource, /postWorkMutation\("\/api\/tasks", \{ action, id, \.\.\.fields \}\)/);
-  assert.match(updateSource, /updateTaskCollections\(current, id, optimisticTask\)/);
+  assert.match(updateSource, /const isCompletion = action === "status" && fields\.status === "completed"/);
+  assert.match(updateSource, /if \(optimisticTask && !isCompletion\)/);
+  assert.match(updateSource, /taskCompletionFailureMessage\(previousTask, error\)/);
   assert.doesNotMatch(updateSource, /loadWorkspace/);
   assert.match(updateSource, /return \{ ok: true, task: result\.task \}/);
 });
 
-test("Home Today reuses the official Work completion mutation with rollback feedback", async () => {
+test("Home Today reuses confirmed Work completion and keeps task-specific failure feedback", async () => {
   const app = await source("app/WorkspaceApp.tsx");
   const homeStart = app.indexOf("function HomeView(");
   const workStart = app.indexOf("function WorkView(", homeStart);
@@ -42,7 +45,9 @@ test("Home Today reuses the official Work completion mutation with rollback feed
   assert.match(home, /aria-label=\{`完成任务：\$\{task\.title\}`\}/);
   assert.match(home, /onChange=\{\(\) => void completeTodayTask\(task\)\}/);
   assert.match(home, /onClick=\{\(\) => onOpenTask\(task\)\}/);
-  assert.match(home, /完成失败，请重试/);
+  assert.match(home, /todayCompletionErrors/);
+  assert.match(home, /正在完成…/);
+  assert.match(home, /todayCompletionErrors\[String\(task\.id\)\]/);
   assert.match(home, /setCompletingTodayTasks/);
   assert.doesNotMatch(home, /loadWorkspace/);
 });
@@ -92,7 +97,23 @@ test("Work completion updates an existing completed-task cache without a blockin
 
   assert.match(act, /onCompletedTasksStateChange/);
   assert.match(act, /tasks: \[\s*result\.task,/);
+  assert.match(act, /setTaskCompletionErrors/);
+  assert.match(app, /“\$\{title\}”未完成：保存超时，请重试/);
   assert.doesNotMatch(act, /await loadCompletedTasks/);
+});
+
+test("Work shows completion pending and retryable task-specific errors in the active row", async () => {
+  const app = await source("app/WorkspaceApp.tsx");
+  const workStart = app.indexOf("function WorkView(");
+  const workEnd = app.indexOf("function ProjectEditModal(", workStart);
+  const work = app.slice(workStart, workEnd);
+  const css = await source("app/globals.css");
+
+  assert.match(work, /const completing = busyTaskId === String\(task\.id\)/);
+  assert.match(work, /正在完成…/);
+  assert.match(work, /task-completion-pending/);
+  assert.match(work, /task-completion-error/);
+  assert.match(css, /\.task-completion-pending,[\s\S]*font-size: var\(--font-meta\)/);
 });
 
 test("project writes share timeout-aware requests and avoid post-update reads", async () => {
