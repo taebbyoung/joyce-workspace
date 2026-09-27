@@ -1908,6 +1908,17 @@ kbd {
   color: var(--accent);
 }
 
+.open-order-drag-handle:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.open-order-sort-status {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
 .active-order-header {
   display: grid;
   grid-template-columns: 0.8fr 1.3fr 0.9fr 0.8fr;

@@ -36,7 +36,9 @@ export function sortActiveOrders(
         .filter(Boolean)
         .sort()[0] || "9999-12-31";
     const timeDifference = firstNode(a).localeCompare(firstNode(b));
-    return timeDifference || String(b.updated_at || "").localeCompare(String(a.updated_at || ""));
+    return timeDifference ||
+      String(b.updated_at || "").localeCompare(String(a.updated_at || "")) ||
+      String(a.id || "").localeCompare(String(b.id || ""));
   });
 }
 

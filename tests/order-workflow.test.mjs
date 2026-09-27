@@ -131,6 +131,11 @@ test("open-order drag persistence is limited to incomplete orders", async () => 
   assert.equal(orderInsert[1].split(",").length, 56);
   assert.equal((orderInsert[2].match(/\?/g) || []).length, 56);
   assert.match(app, /open-order-drag-handle/);
+  const ordersView = app.slice(app.indexOf("function OrdersView("), app.indexOf("function AfterSalesView("));
+  assert.match(ordersView, /open-order-drag-handle[\s\S]*onPointerDown[\s\S]*setPointerCapture/);
+  assert.doesNotMatch(ordersView, /open-order-drag-handle[\s\S]{0,280}draggable/);
+  assert.match(ordersView, /disabled=\{!canReorderOpenOrders\}/);
+  assert.match(ordersView, /正在保存排序…/);
   assert.match(app, /排序保存失败，请重试/);
 });
 

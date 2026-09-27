@@ -1039,11 +1039,11 @@ export function WorkspaceApp() {
       });
       result = await readApiJson(response, "排序保存失败，请重试。");
     } catch (error) {
-      showToast(error instanceof Error ? error.message : "排序保存失败，请重试。");
+      showToast("排序保存失败，请重试");
       return false;
     }
     if (!response.ok) {
-      showToast(String(result.error || "排序保存失败，请重试。"));
+      showToast("排序保存失败，请重试");
       return false;
     }
     setData((current) => {
@@ -6340,6 +6340,8 @@ function OrdersView({
   const orderModalBodyRef = useRef<HTMLDivElement | null>(null);
   const openOrderManualIdsRef = useRef<string[]>([]);
   const openOrderDraggingIdRef = useRef("");
+  const openOrderPointerIdRef = useRef<number | null>(null);
+  const openOrderReorderingRef = useRef(false);
   const [openOrderManualIds, setOpenOrderManualIds] = useState<string[]>([]);
   const [openOrderDraggingId, setOpenOrderDraggingId] = useState("");
   const [openOrderReordering, setOpenOrderReordering] = useState(false);
@@ -6386,6 +6388,7 @@ function OrdersView({
     .filter((order) => inCurrentMonth(order.estimated_delivery_date))
     .sort((a, b) => String(a.estimated_delivery_date).localeCompare(String(b.estimated_delivery_date)));
   const canReorderOpenOrders = activeFilter === "active" && !query.trim() && !busy && !openOrderReordering;
+  const showOpenOrderDragHandles = activeFilter === "active" && !query.trim();
   const manuallyOrderedActiveOrders = useMemo(() => {
     if (!openOrderManualIds.length || openOrderManualIds.length !== activeOrders.length) return activeOrders;
     const byId = new Map(activeOrders.map((order) => [String(order.id), order]));
@@ -6406,6 +6409,7 @@ function OrdersView({
 
   function clearOpenOrderDrag() {
     openOrderDraggingIdRef.current = "";
+    openOrderPointerIdRef.current = null;
     setOpenOrderDraggingId("");
   }
 
@@ -6428,12 +6432,13 @@ function OrdersView({
     setOpenOrderManualIds(currentIds);
   }
 
-  function beginOpenOrderDrag(orderId: string, fallbackIds: string[]) {
-    if (!canReorderOpenOrders) return;
+  function beginOpenOrderDrag(orderId: string, fallbackIds: string[], pointerId: number) {
+    if (!canReorderOpenOrders || openOrderReorderingRef.current) return;
     if (!openOrderManualIdsRef.current.length) {
       openOrderManualIdsRef.current = [...fallbackIds];
       setOpenOrderManualIds([...fallbackIds]);
     }
+    openOrderPointerIdRef.current = pointerId;
     openOrderDraggingIdRef.current = orderId;
     setOpenOrderDraggingId(orderId);
   }
@@ -6449,15 +6454,21 @@ function OrdersView({
       resetOpenOrderManualOrder();
       return;
     }
+    openOrderReorderingRef.current = true;
     setOpenOrderReordering(true);
-    const saved = await onOrderReorder(ids);
-    setOpenOrderReordering(false);
-    resetOpenOrderManualOrder();
+    let saved = false;
+    try {
+      saved = await onOrderReorder(ids);
+    } finally {
+      openOrderReorderingRef.current = false;
+      setOpenOrderReordering(false);
+      resetOpenOrderManualOrder();
+    }
     if (!saved) setMessage("排序保存失败，请重试。");
   }
 
   function moveOpenOrderFromPointer(event: ReactPointerEvent<HTMLButtonElement>, fallbackIds: string[]) {
-    if (event.pointerType === "mouse" || !openOrderDraggingIdRef.current) return;
+    if (openOrderPointerIdRef.current !== event.pointerId || !openOrderDraggingIdRef.current) return;
     const target = document.elementFromPoint(event.clientX, event.clientY)
       ?.closest<HTMLElement>("[data-open-order-id]");
     const overId = target?.dataset.openOrderId;
@@ -7004,32 +7015,32 @@ function OrdersView({
                 className={`active-order-card ${openOrderDraggingId === String(item.id) ? "is-dragging" : ""}`}
                 data-open-order-id={item.id}
                 key={item.id}
-                onDragOver={(event: DragEvent<HTMLElement>) => {
-                  if (!canReorderOpenOrders || !openOrderDraggingIdRef.current) return;
-                  event.preventDefault();
-                  moveOpenOrder(openOrderDraggingIdRef.current, String(item.id), fallbackIds);
-                }}
+                aria-busy={openOrderReordering || undefined}
               >
-                {canReorderOpenOrders ? (
+                {showOpenOrderDragHandles ? (
                   <button
                     className="open-order-drag-handle"
                     type="button"
-                    draggable
+                    disabled={!canReorderOpenOrders}
                     aria-label={`拖动调整 ${item.order_no || item.pi_no || "订单"} 的位置`}
                     onClick={(event) => event.stopPropagation()}
-                    onDragStart={(event: DragEvent<HTMLButtonElement>) => {
-                      beginOpenOrderDrag(String(item.id), fallbackIds);
-                      event.dataTransfer.effectAllowed = "move";
-                    }}
-                    onDragEnd={() => void finishOpenOrderDrag(fallbackIds)}
                     onPointerDown={(event) => {
-                      if (event.pointerType === "mouse") return;
+                      if (!canReorderOpenOrders) return;
+                      event.preventDefault();
+                      event.stopPropagation();
                       event.currentTarget.setPointerCapture(event.pointerId);
-                      beginOpenOrderDrag(String(item.id), fallbackIds);
+                      beginOpenOrderDrag(String(item.id), fallbackIds, event.pointerId);
                     }}
                     onPointerMove={(event) => moveOpenOrderFromPointer(event, fallbackIds)}
-                    onPointerUp={() => void finishOpenOrderDrag(fallbackIds)}
-                    onPointerCancel={() => {
+                    onPointerUp={(event) => {
+                      if (openOrderPointerIdRef.current !== event.pointerId) return;
+                      if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+                        event.currentTarget.releasePointerCapture(event.pointerId);
+                      }
+                      void finishOpenOrderDrag(fallbackIds);
+                    }}
+                    onPointerCancel={(event) => {
+                      if (openOrderPointerIdRef.current !== event.pointerId) return;
                       clearOpenOrderDrag();
                       resetOpenOrderManualOrder();
                     }}
@@ -7064,6 +7075,7 @@ function OrdersView({
             <EmptyState title="当前筛选没有订单" detail="可以切换筛选，或新增整车订单。" />
           ) : null}
         </div>
+        {openOrderReordering ? <p className="open-order-sort-status" role="status">正在保存排序…</p> : null}
       </section>
 
       <section className="order-workflow-section completed-orders-section">
