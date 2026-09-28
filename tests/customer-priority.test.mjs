@@ -7,6 +7,7 @@ import {
   POTENTIAL_CONTACT_CYCLES,
   POTENTIAL_FOLLOWUP_SUGGESTIONS,
   existingContactState,
+  getCustomerFollowUpState,
   normalizeCustomerGrade,
   potentialFollowupState,
   ratingReviewDue,
@@ -38,11 +39,11 @@ test("Potential follow-up reminders use the shared 7/15/30/45 default cycles", (
   });
   assert.equal(
     potentialFollowupState({ grade: "1", next_follow: null }, today).label,
-    "未记录最近联系",
+    "未设置跟进",
   );
   assert.equal(
     potentialFollowupState({ grade: "4", next_follow: null }, today).label,
-    "未记录最近联系",
+    "未设置跟进",
   );
   assert.deepEqual(
     potentialFollowupState({ grade: "2", next_follow: "2026-08-14" }, today),
@@ -71,7 +72,7 @@ test("Existing contact cycles use A7 B15 C30 D45 and exact boundaries", () => {
   const today = "2026-08-17";
   assert.deepEqual(existingContactState({ grade: "A", last_follow: "2026-08-08" }, today), {
     kind: "overdue",
-    label: "逾期2天",
+    label: "逾期2天未跟进",
     overdueDays: 2,
   });
   assert.equal(
@@ -87,6 +88,22 @@ test("Existing contact cycles use A7 B15 C30 D45 and exact boundaries", () => {
     "due",
   );
   assert.equal(existingContactState({ grade: "A", last_follow: null }, today).kind, "missing");
+});
+
+test("manual customer next follow-up takes priority over every lifecycle default", () => {
+  const today = "2026-08-17";
+  assert.equal(
+    getCustomerFollowUpState({ lifecycle: "existing", grade: "A", last_contact_at: "2026-01-01", next_follow: today }, today).kind,
+    "due",
+  );
+  assert.equal(
+    getCustomerFollowUpState({ lifecycle: "potential_customer", grade: "1", last_contact_at: "2026-01-01", next_follow: "2026-08-18" }, today).kind,
+    "normal",
+  );
+  assert.equal(
+    getCustomerFollowUpState({ lifecycle: "potential_customer", grade: "1", last_contact_at: null, next_follow: null }, today).kind,
+    "missing",
+  );
 });
 
 test("customer priority sorting keeps 2 and 3 in one tier", () => {

@@ -385,8 +385,6 @@ export async function POST(request: Request) {
         )
           ? text(payload.purchaseAbility, 30)
           : null;
-        const nextFollow = dateOnly(payload.nextFollow);
-        if (nextFollow === undefined) return errorResponse("下次跟进日期无效。");
         const gradeChanged = String(customer.grade || "") !== String(grade || "");
         const ratingReasonChanged =
           String(customer.rating_reason || "") !== String(ratingReason || "");
@@ -395,7 +393,7 @@ export async function POST(request: Request) {
           .prepare(
             `UPDATE customers SET
               grade = ?, purchase_intent = ?, purchase_ability = ?, rating_reason = ?,
-              next_follow = ?, last_reviewed_at = ?, updated_at = ?
+              last_reviewed_at = ?, updated_at = ?
              WHERE id = ?`,
           )
           .bind(
@@ -403,7 +401,6 @@ export async function POST(request: Request) {
             purchaseIntent,
             purchaseAbility,
             ratingReason,
-            nextFollow,
             reviewChanged ? now : customer.last_reviewed_at || null,
             now,
             customerId,
@@ -433,21 +430,32 @@ export async function POST(request: Request) {
       return success(customerId);
     }
 
+    if (action === "save_next_follow_up") {
+      const nextFollow = dateOnly(payload.nextFollow);
+      if (nextFollow === undefined) return errorResponse("下次跟进日期无效。");
+      await db
+        .prepare("UPDATE customers SET next_follow = ?, updated_at = ? WHERE id = ?")
+        .bind(nextFollow || null, now, customerId)
+        .run();
+      await audit("customer_next_follow_updated", "customer", customerId, customer, {
+        nextFollow: nextFollow || null,
+      });
+      return success(customerId);
+    }
+
     if (action === "record_follow_up") {
       const followUpDate = dateOnly(
         payload.followUpDate ?? String(payload.followUpAt ?? "").slice(0, 10),
       );
       const content = nullable(payload.content, 20000);
-      const nextFollowUpDate = dateOnly(payload.nextFollowUpDate);
       if (!followUpDate) return errorResponse("跟进日期无效。");
       if (!content) return errorResponse("请填写跟进内容。");
-      if (nextFollowUpDate === undefined) return errorResponse("下次跟进日期无效。");
       const followUpId = crypto.randomUUID();
       const statements = [
         db.prepare(`INSERT INTO customer_follow_ups
           (id, customer_id, follow_up_at, content, next_follow_up_date, channel, created_at, updated_at)
           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
-          .bind(followUpId, customerId, followUpDate, content, nextFollowUpDate || null, nullable(payload.channel, 40), now, now),
+          .bind(followUpId, customerId, followUpDate, content, null, nullable(payload.channel, 40), now, now),
         db.prepare(
           `UPDATE customers
            SET last_follow = (
@@ -456,17 +464,16 @@ export async function POST(request: Request) {
                last_contact_at = (
                  SELECT MAX(follow_up_at) FROM customer_follow_ups WHERE customer_id = ?
                ),
-               next_follow = CASE WHEN ? IS NOT NULL THEN ? ELSE next_follow END,
                updated_at = ?
            WHERE id = ?`,
-        ).bind(customerId, customerId, nextFollowUpDate || null, nextFollowUpDate || null, now, customerId),
+        ).bind(customerId, customerId, now, customerId),
       ];
       await db.batch(statements);
       const followUp = await db
         .prepare("SELECT * FROM customer_follow_ups WHERE id = ? AND customer_id = ?")
         .bind(followUpId, customerId)
         .first<Record<string, unknown>>();
-      await audit("customer_follow_up_recorded", "customer_follow_up", followUpId, null, { customerId, followUpDate, content, nextFollowUpDate });
+      await audit("customer_follow_up_recorded", "customer_follow_up", followUpId, null, { customerId, followUpDate, content });
       return success(customerId, { followUpId, followUp });
     }
 
@@ -474,11 +481,9 @@ export async function POST(request: Request) {
       const followUpId = text(payload.followUpId, 100);
       const followUpDate = dateOnly(payload.followUpDate);
       const content = nullable(payload.content, 20000);
-      const nextFollowUpDate = dateOnly(payload.nextFollowUpDate);
       if (!followUpId) return errorResponse("缺少跟进记录 ID。");
       if (!followUpDate) return errorResponse("跟进日期无效。");
       if (!content) return errorResponse("请填写跟进内容。");
-      if (nextFollowUpDate === undefined) return errorResponse("下次跟进日期无效。");
       const before = await db
         .prepare("SELECT * FROM customer_follow_ups WHERE id = ? AND customer_id = ?")
         .bind(followUpId, customerId)
@@ -487,10 +492,10 @@ export async function POST(request: Request) {
       await db
         .prepare(
           `UPDATE customer_follow_ups
-           SET follow_up_at = ?, content = ?, next_follow_up_date = ?, updated_at = ?
+           SET follow_up_at = ?, content = ?, updated_at = ?
            WHERE id = ? AND customer_id = ?`,
         )
-        .bind(followUpDate, content, nextFollowUpDate || null, now, followUpId, customerId)
+        .bind(followUpDate, content, now, followUpId, customerId)
         .run();
       await recomputeLastFollow(customerId, now);
       const followUp = await db
@@ -500,7 +505,6 @@ export async function POST(request: Request) {
       await audit("customer_follow_up_updated", "customer_follow_up", followUpId, before, {
         followUpDate,
         content,
-        nextFollowUpDate,
       });
       return success(customerId, { followUp });
     }

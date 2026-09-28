@@ -1,6 +1,6 @@
 import {
-  EXISTING_CONTACT_CYCLES,
-  POTENTIAL_CONTACT_CYCLES,
+  getCustomerFollowUpDueDate,
+  getCustomerFollowUpState,
   normalizeCustomerGrade,
 } from "./customer-priority.ts";
 
@@ -16,49 +16,24 @@ function dateKey(value: unknown) {
     : "";
 }
 
-function addDays(dateValue: string, days: number) {
-  const [year, month, day] = dateValue.split("-").map(Number);
-  const date = new Date(Date.UTC(year, month - 1, day));
-  date.setUTCDate(date.getUTCDate() + days);
-  return date.toISOString().slice(0, 10);
-}
-
-function dayDifference(later: string, earlier: string) {
-  return Math.round((Date.parse(`${later}T00:00:00Z`) - Date.parse(`${earlier}T00:00:00Z`)) / 86_400_000);
-}
-
-function lifecycleCycle(customer: CustomerRow) {
-  const lifecycle = String(customer.lifecycle ?? "");
-  const grade = normalizeCustomerGrade(lifecycle, customer.grade);
-  if (lifecycle === "existing") {
-    return { cycle: EXISTING_CONTACT_CYCLES[grade] || 0, label: grade ? `${grade}类` : "" };
-  }
-  if (lifecycle === "potential_customer") {
-    return { cycle: POTENTIAL_CONTACT_CYCLES[grade] || 0, label: grade ? `${grade}级` : "" };
-  }
-  return { cycle: 0, label: "" };
-}
-
 export function customerFollowUpDueDate(customer: CustomerRow) {
-  const explicitNextFollow = dateKey(customer.next_follow);
-  if (explicitNextFollow) return explicitNextFollow;
-  const { cycle } = lifecycleCycle(customer);
-  const lastContact = dateKey(customer.last_contact_at) || dateKey(customer.last_follow);
-  return cycle && lastContact ? addDays(lastContact, cycle) : "";
+  return getCustomerFollowUpDueDate(customer);
 }
 
 export function buildCustomerFollowUpAttention(customer: CustomerRow, todayValue: string) {
   const customerId = String(customer.id ?? "").trim();
   const lifecycle = String(customer.lifecycle ?? "");
   const today = dateKey(todayValue);
-  const { cycle, label } = lifecycleCycle(customer);
   const dueDate = customerFollowUpDueDate(customer);
-  if (!customerId || customer.deleted_at || !today || !dueDate || dueDate > today || !["existing", "potential_customer"].includes(lifecycle)) return null;
+  const state = getCustomerFollowUpState(customer, today);
+  if (!customerId || customer.deleted_at || !today || !dueDate || state.kind !== "overdue" && state.kind !== "due" || !["existing", "potential_customer"].includes(lifecycle)) return null;
 
   const company = String(customer.company ?? "").trim() || "客户";
   const customerCode = String(customer.customer_code ?? "").trim();
-  const overdueDays = Math.max(0, dayDifference(today, dueDate));
+  const overdueDays = state.overdueDays;
   const explicitNextFollow = dateKey(customer.next_follow);
+  const grade = normalizeCustomerGrade(lifecycle, customer.grade);
+  const gradeLabel = grade ? lifecycle === "existing" ? `${grade}类` : `${grade}级` : "";
   return {
     kind: "customer",
     id: customerId,
@@ -67,8 +42,8 @@ export function buildCustomerFollowUpAttention(customer: CustomerRow, todayValue
     source_id: customerId,
     title: lifecycle === "existing" && customerCode ? `${customerCode} · ${company}` : company,
     message: overdueDays === 0
-      ? label && cycle ? `${label} · ${cycle}天周期 · 今天需要跟进` : "今天需要跟进"
-      : label ? `${label} · 已逾期${overdueDays}天未跟进` : `已逾期${overdueDays}天未跟进`,
+      ? gradeLabel ? `${gradeLabel} · 今天需要跟进` : "今天需要跟进"
+      : gradeLabel ? `${gradeLabel} · 已逾期${overdueDays}天未跟进` : `已逾期${overdueDays}天未跟进`,
     risk_level: "Medium",
     evidence_source: explicitNextFollow ? "customers.next_follow" : "customers.last_contact_at/default_cycle",
     attention_date: dueDate,

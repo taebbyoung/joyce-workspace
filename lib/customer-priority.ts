@@ -53,6 +53,13 @@ function dayDifference(later: string, earlier: string) {
   return ordinal(later) - ordinal(earlier);
 }
 
+function addDays(value: string, days: number) {
+  const [year, month, day] = value.split("-").map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
+}
+
 export function normalizeCustomerGrade(lifecycle: unknown, grade: unknown) {
   const value = String(grade ?? "").trim().toUpperCase();
   if (lifecycle === "potential_customer") {
@@ -64,68 +71,60 @@ export function normalizeCustomerGrade(lifecycle: unknown, grade: unknown) {
   return "";
 }
 
-export function potentialFollowupState(
-  customer: CustomerPriorityRow,
-  todayValue: string,
-): FollowupState {
-  const today = dateKey(todayValue);
-  const grade = normalizeCustomerGrade("potential_customer", customer.grade);
-  const cycle = POTENTIAL_CONTACT_CYCLES[grade];
-  const nextFollow = dateKey(customer.next_follow);
-  if (!nextFollow) {
-    if (!cycle) return { kind: "none", label: "未评级", overdueDays: 0 };
-    const lastContact = dateKey(customer.last_contact_at) || dateKey(customer.last_follow);
-    if (!lastContact) {
-      return { kind: "missing", label: "未记录最近联系", overdueDays: 0 };
-    }
-    if (!today) return { kind: "normal", label: `最近联系 ${lastContact}`, overdueDays: 0 };
-    const daysSince = Math.max(0, dayDifference(today, lastContact));
-    const overdueDays = daysSince - cycle;
-    if (overdueDays > 0) {
-      return { kind: "overdue", label: `逾期${overdueDays}天未跟进`, overdueDays };
-    }
-    if (overdueDays === 0) {
-      return { kind: "due", label: "今天建议跟进", overdueDays: 0 };
-    }
-    return { kind: "normal", label: `上次联系${daysSince}天前`, overdueDays: 0 };
-  }
-  if (!today) return { kind: "normal", label: `下次跟进 ${nextFollow}`, overdueDays: 0 };
-  const difference = dayDifference(today, nextFollow);
-  if (difference > 0) {
-    return {
-      kind: "overdue",
-      label: `逾期${difference}天未跟进`,
-      overdueDays: difference,
-    };
-  }
-  if (difference === 0) {
-    return { kind: "due", label: "今天需要跟进", overdueDays: 0 };
-  }
-  return { kind: "normal", label: `计划 ${nextFollow.slice(5)}`, overdueDays: 0 };
+function customerCycle(customer: CustomerPriorityRow) {
+  const lifecycle = String(customer.lifecycle ?? "");
+  const grade = normalizeCustomerGrade(lifecycle, customer.grade);
+  if (lifecycle === "existing") return EXISTING_CONTACT_CYCLES[grade] || 0;
+  if (lifecycle === "potential_customer") return POTENTIAL_CONTACT_CYCLES[grade] || 0;
+  return 0;
 }
 
-export function existingContactState(
+export function getCustomerFollowUpDueDate(customer: CustomerPriorityRow) {
+  const manualDate = dateKey(customer.next_follow);
+  if (manualDate) return manualDate;
+  const lastContact = dateKey(customer.last_contact_at) || dateKey(customer.last_follow);
+  const cycle = customerCycle(customer);
+  return lastContact && cycle ? addDays(lastContact, cycle) : "";
+}
+
+/**
+ * The single scheduling rule used by Customer Detail, lists, and Attention.
+ * A manually scheduled customer.next_follow always wins over the grade cycle.
+ */
+export function getCustomerFollowUpState(
   customer: CustomerPriorityRow,
   todayValue: string,
 ): FollowupState {
   const today = dateKey(todayValue);
-  const grade = normalizeCustomerGrade("existing", customer.grade);
-  const cycle = EXISTING_CONTACT_CYCLES[grade];
-  if (!cycle) return { kind: "none", label: "未评级", overdueDays: 0 };
-  const lastContact = dateKey(customer.last_contact_at) || dateKey(customer.last_follow);
-  if (!lastContact) {
-    return { kind: "missing", label: "未记录最近联系", overdueDays: 0 };
+  const nextFollow = dateKey(customer.next_follow);
+  if (nextFollow) {
+    if (!today) return { kind: "normal", label: `下次跟进 ${nextFollow}`, overdueDays: 0 };
+    const difference = dayDifference(today, nextFollow);
+    if (difference > 0) return { kind: "overdue", label: `逾期${difference}天未跟进`, overdueDays: difference };
+    if (difference === 0) return { kind: "due", label: "今天需要跟进", overdueDays: 0 };
+    return { kind: "normal", label: `计划 ${nextFollow.slice(5)}`, overdueDays: 0 };
   }
+
+  const lastContact = dateKey(customer.last_contact_at) || dateKey(customer.last_follow);
+  if (!lastContact) return { kind: "missing", label: "未设置跟进", overdueDays: 0 };
+  const cycle = customerCycle(customer);
+  if (!cycle) return { kind: "none", label: "未评级", overdueDays: 0 };
   if (!today) return { kind: "normal", label: `最近联系 ${lastContact}`, overdueDays: 0 };
   const daysSince = Math.max(0, dayDifference(today, lastContact));
   const overdueDays = daysSince - cycle;
-  if (overdueDays > 0) {
-    return { kind: "overdue", label: `逾期${overdueDays}天`, overdueDays };
-  }
-  if (overdueDays === 0) {
-    return { kind: "due", label: "今天建议联系", overdueDays: 0 };
-  }
+  if (overdueDays > 0) return { kind: "overdue", label: `逾期${overdueDays}天未跟进`, overdueDays };
+  if (overdueDays === 0) return { kind: "due", label: "今天建议跟进", overdueDays: 0 };
   return { kind: "normal", label: `上次联系${daysSince}天前`, overdueDays: 0 };
+}
+
+// Compatibility wrappers keep existing callers stable while routing all of
+// them through the same customer-level scheduling rule.
+export function potentialFollowupState(customer: CustomerPriorityRow, today: string) {
+  return getCustomerFollowUpState({ ...customer, lifecycle: "potential_customer" }, today);
+}
+
+export function existingContactState(customer: CustomerPriorityRow, today: string) {
+  return getCustomerFollowUpState({ ...customer, lifecycle: "existing" }, today);
 }
 
 export function ratingReviewDue(customer: CustomerPriorityRow, todayValue: string) {

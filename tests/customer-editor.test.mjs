@@ -130,7 +130,7 @@ test("customer editor keeps company fields in the main form and saves contacts i
   assert.match(customerDetail, /data-customer-form=\{`contact:\$\{contact\.id\}`\}/);
   assert.match(customerDetail, /operationForForm/);
   assert.match(customerDetail, /action: "update_rating"/);
-  assert.match(customerDetail, /payload: \{ grade, purchaseIntent, purchaseAbility, ratingReason, nextFollow \}/);
+  assert.match(customerDetail, /payload: \{ grade, purchaseIntent, purchaseAbility, ratingReason \}/);
   assert.match(customerDetail, /const ratingFormChanged = useCallback/);
   assert.match(customerDetail, /setIsDirty\(changed \|\| ratingFormChanged\(\)\)/);
   assert.match(customerDetail, /ratingFormChanged\(\)[\s\S]*!formsToSave\.some/);
@@ -401,7 +401,7 @@ test("customer follow-ups are explicitly recorded, lightweight, and local", () =
   assert.match(customerDetail, /customer-followup-history/);
   assert.match(customerDetail, /loadMoreFollowUps/);
   assert.match(customerDetail, /followUpDate/);
-  assert.match(customerDetail, /nextFollowUpDate/);
+  assert.doesNotMatch(customerDetail, /name="nextFollowUpDate"/);
   assert.doesNotMatch(customerDetail, /补录有效联系日期|记录本次联系|recordContact/);
   assert.match(customerDetail, /FollowUpHistoryItem/);
   assert.match(customerDetail, /saveFollowUpEdit/);
@@ -431,7 +431,7 @@ test("customer follow-ups are explicitly recorded, lightweight, and local", () =
   assert.match(migration, /backup_v58_customer_memory_contact_notes_20260819/);
 });
 
-test("a new potential-customer follow-up updates the current date without rewriting history decisions", () => {
+test("customer next follow-up is independently saved and follow-up history never overwrites it", () => {
   const app = fs.readFileSync(path.join(root, "app/WorkspaceApp.tsx"), "utf8");
   const route = fs.readFileSync(path.join(root, "app/api/customers/route.ts"), "utf8");
   const customerDetail = app.slice(
@@ -447,22 +447,17 @@ test("a new potential-customer follow-up updates the current date without rewrit
     route.indexOf('if (action === "save_contact")'),
   );
 
-  assert.match(
-    customerDetail,
-    /下次跟进日期[\s\S]*value=\{nextFollow\}[\s\S]*setNextFollow/,
-  );
-  assert.match(
-    customerDetail,
-    /下次跟进[\s\S]*nextFollow \? formatDate\(nextFollow\) : "未设置"/,
-  );
-  assert.match(
-    customerDetail,
-    /record_follow_up[\s\S]*setNextFollow\(String\(result\.snapshot\.customer\?\.next_follow \|\| ""\)\.slice\(0, 10\)\)/,
-  );
+  assert.match(customerDetail, /requestCustomerSave\("save_next_follow_up"/);
+  assert.match(customerDetail, /下次跟进日期保存失败，请重试/);
+  assert.match(customerDetail, /\+\{days\}天/);
+  assert.doesNotMatch(customerDetail, /name="nextFollow"/);
+  assert.doesNotMatch(customerDetail, /name="nextFollowUpDate"/);
+  assert.match(route, /action === "save_next_follow_up"/);
+  assert.match(route, /UPDATE customers SET next_follow = \?, updated_at = \? WHERE id = \?/);
   assert.match(recordFollowUp, /await db\.batch\(statements\)/);
-  assert.match(recordFollowUp, /next_follow = CASE WHEN \? IS NOT NULL THEN \? ELSE next_follow END/);
-  assert.doesNotMatch(recordFollowUp, /recomputeNextFollow/);
-  assert.doesNotMatch(historicalFollowUpChanges, /next_follow\s*=|recomputeNextFollow/);
+  assert.doesNotMatch(recordFollowUp, /next_follow\s*=/);
+  assert.doesNotMatch(recordFollowUp, /nextFollowUpDate/);
+  assert.doesNotMatch(historicalFollowUpChanges, /next_follow_up_date\s*=/);
 });
 
 test("AI suggestions remain UI-only until Joyce adopts and saves", () => {

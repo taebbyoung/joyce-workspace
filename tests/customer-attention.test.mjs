@@ -34,7 +34,7 @@ test("customer attention uses the internal customer id and includes due-today fo
     source_type: "customer",
     source_id: "customer-42",
     title: "GR04 · Wheelnwater",
-    message: "A类 · 7天周期 · 今天需要跟进",
+    message: "A类 · 今天需要跟进",
   });
 });
 

@@ -59,11 +59,10 @@ import {
 import { syncCustomerFollowUpAttention } from "@/lib/customer-attention";
 import {
   EXISTING_CONTACT_CYCLES,
+  getCustomerFollowUpState,
   POTENTIAL_CONTACT_CYCLES,
   POTENTIAL_FOLLOWUP_SUGGESTIONS,
-  existingContactState,
   normalizeCustomerGrade,
-  potentialFollowupState,
   ratingReviewDue,
   sortCustomersForLifecycle,
 } from "@/lib/customer-priority";
@@ -3447,6 +3446,13 @@ function localDateText(date: Date) {
   return `${year}-${month}-${day}`;
 }
 
+function dateAfterLocalDays(today: string, days: number) {
+  const [year, month, day] = today.split("-").map(Number);
+  const date = new Date(year, month - 1, day);
+  date.setDate(date.getDate() + days);
+  return localDateText(date);
+}
+
 function updateTaskCollections(
   current: WorkspaceData,
   id: string,
@@ -4209,10 +4215,7 @@ function CustomersView({
         </div>
         {rows.map((customer) => {
           const grade = normalizeCustomerGrade(tab, customer.grade);
-          const followup =
-            tab === "potential_customer"
-              ? potentialFollowupState(customer, today)
-              : existingContactState(customer, today);
+          const followup = getCustomerFollowUpState(customer, today);
           return (
             <button
               className="table-row"
@@ -4541,15 +4544,6 @@ function FollowUpHistoryItem({
             跟进内容
             <textarea name="content" rows={3} required defaultValue={content} />
           </label>
-          {lifecycle === "potential_customer" ? (
-            <label>
-              下次跟进日期（可选）
-              <DateInput
-                name="nextFollowUpDate"
-                defaultValue={String(followUp.next_follow_up_date || "").slice(0, 10)}
-              />
-            </label>
-          ) : null}
           {error ? <p className="inline-warning" role="alert">{error}</p> : null}
           <div className="dialog-actions">
             <button type="button" disabled={actionBusy} onClick={onCancelEdit}>取消</button>
@@ -4645,6 +4639,7 @@ function CustomerDetail({
   const [nextFollow, setNextFollow] = useState(
     String(customer.next_follow || "").slice(0, 10),
   );
+  const [nextFollowSaveState, setNextFollowSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [newContactOpen, setNewContactOpen] = useState(false);
   const [followUpOpen, setFollowUpOpen] = useState(false);
   const [editingFollowUpId, setEditingFollowUpId] = useState<string | null>(null);
@@ -4753,18 +4748,15 @@ function CustomerDetail({
       gradeChanged ||
       ratingReasonChanged ||
       purchaseIntent !== String(customer.purchase_intent || "unconfirmed") ||
-      purchaseAbility !== String(customer.purchase_ability || "unconfirmed") ||
-      nextFollow !== String(customer.next_follow || "").slice(0, 10)
+      purchaseAbility !== String(customer.purchase_ability || "unconfirmed")
     );
   }, [
     customer.grade,
     customer.lifecycle,
-    customer.next_follow,
     customer.purchase_ability,
     customer.purchase_intent,
     customer.rating_reason,
     grade,
-    nextFollow,
     purchaseAbility,
     purchaseIntent,
     ratingReason,
@@ -4797,7 +4789,7 @@ function CustomerDetail({
   useEffect(() => {
     const frame = window.requestAnimationFrame(refreshDirty);
     return () => window.cancelAnimationFrame(frame);
-  }, [grade, nextFollow, profileLifecycle, purchaseAbility, purchaseIntent, ratingReason, refreshDirty]);
+  }, [grade, profileLifecycle, purchaseAbility, purchaseIntent, ratingReason, refreshDirty]);
 
   async function requestCustomerSave(action: string, payload: Row) {
     const response = await fetch("/api/customers", {
@@ -4864,7 +4856,7 @@ function CustomerDetail({
     if (key === "rating") {
       return {
         action: "update_rating",
-        payload: { grade, purchaseIntent, purchaseAbility, ratingReason, nextFollow },
+        payload: { grade, purchaseIntent, purchaseAbility, ratingReason },
       };
     }
     if (key === "profile") return { action: "update_profile", payload: values };
@@ -5034,6 +5026,23 @@ function CustomerDetail({
     }
   }
 
+  async function saveNextFollow(nextValue: string) {
+    if (nextFollowSaveState === "saving") return;
+    const previousValue = nextFollow;
+    setNextFollow(nextValue);
+    setNextFollowSaveState("saving");
+    try {
+      const result = await requestCustomerSave("save_next_follow_up", { nextFollow: nextValue });
+      if (result.snapshot) onSaved(result.snapshot);
+      setNextFollow(String(result.snapshot?.customer?.next_follow || nextValue).slice(0, 10));
+      setNextFollowSaveState("saved");
+    } catch {
+      setNextFollow(previousValue);
+      setNextFollowSaveState("error");
+      setMessage("下次跟进日期保存失败，请重试");
+    }
+  }
+
   async function saveFollowUp(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const form = followUpRef.current;
@@ -5043,10 +5052,7 @@ function CustomerDetail({
     try {
       const values = formValues(form);
       const result = await requestCustomerSave("record_follow_up", values);
-      if (result.snapshot) {
-        onSaved(result.snapshot);
-        setNextFollow(String(result.snapshot.customer?.next_follow || "").slice(0, 10));
-      }
+      if (result.snapshot) onSaved(result.snapshot);
       const created = result.followUp as Row | undefined;
       const total = followUpTotal + 1;
       setFollowUps((current) => {
@@ -5145,13 +5151,10 @@ function CustomerDetail({
 
   const today = localDateText(new Date());
   const savedGrade = normalizeCustomerGrade(customer.lifecycle, customer.grade);
-  const ratingFollowup =
-    customer.lifecycle === "potential_customer"
-      ? potentialFollowupState(
-          { ...customer, grade, next_follow: nextFollow || null },
-          today,
-        )
-      : existingContactState({ ...customer, grade }, today);
+  const ratingFollowup = getCustomerFollowUpState(
+    { ...customer, grade, next_follow: nextFollow || null },
+    today,
+  );
 
   return (
     <div
@@ -5317,14 +5320,6 @@ function CustomerDetail({
                       <option value="limited">有限</option>
                       <option value="weak">弱</option>
                     </select>
-                  </label>
-                  <label>
-                    下次跟进日期
-                    <DateInput
-                      name="nextFollow"
-                      value={nextFollow}
-                      onChange={(event) => setNextFollow(event.target.value)}
-                    />
                   </label>
                 </>
               ) : null}
@@ -5567,8 +5562,32 @@ function CustomerDetail({
           </div>
         </div>
         <div className="customer-followup-summary">
-          <p><span>最近有效联系</span><strong>{customer.last_follow ? formatDate(customer.last_follow) : "未记录"}</strong></p>
-          <p><span>{customer.lifecycle === "existing" ? "默认联系周期" : "下次跟进"}</span><strong>{customer.lifecycle === "existing" ? (savedGrade ? `${EXISTING_CONTACT_CYCLES[savedGrade]}天` : "评级后显示") : (nextFollow ? formatDate(nextFollow) : "未设置")}</strong></p>
+          <p><span>最近有效联系</span><strong>{customer.last_contact_at || customer.last_follow ? formatDate(customer.last_contact_at || customer.last_follow) : "未记录"}</strong></p>
+          <div className="customer-next-follow-control">
+            <label>
+              下次跟进
+              <DateInput
+                value={nextFollow}
+                disabled={nextFollowSaveState === "saving"}
+                onChange={(event) => void saveNextFollow(event.target.value)}
+              />
+            </label>
+            <div className="customer-next-follow-shortcuts" aria-label="下次跟进快捷日期">
+              {[7, 15, 30, 45].map((days) => (
+                <button
+                  key={days}
+                  type="button"
+                  disabled={nextFollowSaveState === "saving"}
+                  onClick={() => void saveNextFollow(dateAfterLocalDays(today, days))}
+                >
+                  +{days}天
+                </button>
+              ))}
+            </div>
+            <small className={nextFollowSaveState === "error" ? "inline-warning" : ""}>
+              {nextFollowSaveState === "saving" ? "正在保存…" : nextFollowSaveState === "saved" ? "已保存" : nextFollowSaveState === "error" ? "下次跟进日期保存失败，请重试" : ratingFollowup.label}
+            </small>
+          </div>
         </div>
         <div className="follow-up-actions">
           <button type="button" disabled={busy} onClick={() => setFollowUpOpen(true)}>+ 记录跟进</button>
@@ -5577,7 +5596,6 @@ function CustomerDetail({
           <form className="follow-up-form" ref={followUpRef} onSubmit={saveFollowUp}>
             <label>跟进日期<DateInput name="followUpDate" required max={today} defaultValue={today} /></label>
             <label>跟进内容<textarea name="content" rows={3} required placeholder="记录本次真实沟通内容、结论或关键反馈" /></label>
-            {customer.lifecycle === "potential_customer" ? <label>下次跟进日期（可选）<DateInput name="nextFollowUpDate" /></label> : null}
             <div className="dialog-actions"><button type="button" disabled={busy} onClick={() => setFollowUpOpen(false)}>取消</button><button className="primary-button" type="submit" disabled={busy}>保存跟进</button></div>
           </form>
         ) : null}

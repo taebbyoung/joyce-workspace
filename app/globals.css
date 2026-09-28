@@ -3834,6 +3834,39 @@ kbd {
   overflow-wrap: anywhere;
 }
 
+.customer-next-follow-control {
+  display: grid;
+  gap: 7px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--paper);
+  padding: 9px 10px;
+}
+
+.customer-next-follow-control label {
+  display: grid;
+  gap: 4px;
+  color: var(--muted);
+  font-size: var(--font-label);
+}
+
+.customer-next-follow-shortcuts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.customer-next-follow-shortcuts button {
+  min-height: 28px;
+  padding: 3px 8px;
+  font-size: var(--font-label);
+}
+
+.customer-next-follow-control > small {
+  color: var(--muted);
+  font-size: var(--font-meta);
+}
+
 .follow-up-load-more {
   border: 1px solid var(--line);
   border-radius: 8px;
