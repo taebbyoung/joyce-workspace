@@ -3441,7 +3441,7 @@ kbd {
 .customer-editor-columns {
   display: grid;
   grid-template-columns: minmax(0, 3fr) minmax(340px, 2fr);
-  align-items: start;
+  align-items: stretch;
   gap: 20px;
   min-width: 0;
 }
@@ -3453,7 +3453,9 @@ kbd {
 }
 
 .customer-editor-followup-column {
-  align-self: start;
+  align-self: stretch;
+  display: flex;
+  min-height: 0;
   min-width: 0;
 }
 
@@ -3461,6 +3463,7 @@ kbd {
   position: sticky;
   top: 74px;
   display: grid;
+  flex: 1;
   grid-template-rows: auto minmax(170px, 1fr);
   max-height: calc(100dvh - 178px);
   min-height: 0;
@@ -4630,6 +4633,7 @@ kbd {
 
   .customer-editor-followup-column {
     align-self: auto;
+    display: block;
   }
 
   .customer-editor-followup-column .customer-followup-editor {
