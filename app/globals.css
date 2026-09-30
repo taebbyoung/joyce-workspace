@@ -3454,7 +3454,6 @@ kbd {
 
 .customer-editor-followup-column {
   align-self: stretch;
-  display: flex;
   min-height: 0;
   min-width: 0;
 }
@@ -3463,10 +3462,15 @@ kbd {
   position: sticky;
   top: 74px;
   display: grid;
-  flex: 1;
   grid-template-rows: auto minmax(170px, 1fr);
   max-height: calc(100dvh - 178px);
   min-height: 0;
+}
+
+@media (min-width: 921px) {
+  .customer-editor-followup-column .customer-followup-editor {
+    height: 100%;
+  }
 }
 
 .customer-editor-toolbar {
@@ -3908,16 +3912,13 @@ kbd {
 }
 
 .customer-followup-history {
-  display: grid;
-  align-content: start;
+  display: flex;
+  flex-direction: column;
   min-height: 0;
-  overflow-y: auto;
-  overscroll-behavior: contain;
+  overflow: hidden;
   border-top: 1px solid var(--line);
   padding-top: 12px;
   padding-right: 4px;
-  scrollbar-gutter: stable;
-  -webkit-overflow-scrolling: touch;
 }
 
 .follow-up-history-heading {
@@ -3943,6 +3944,15 @@ kbd {
 .follow-up-list {
   display: grid;
   gap: 8px;
+}
+
+.customer-followup-history-list {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  -webkit-overflow-scrolling: touch;
 }
 
 .follow-up-item {

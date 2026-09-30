@@ -5604,7 +5604,7 @@ function CustomerDetail({
           <div className="follow-up-history-heading"><h4>历史跟进记录</h4>{followUpTotal ? <small>{followUpTotal} 条</small> : null}</div>
           {followUpLoadState === "loading" && !followUps.length ? <p className="muted-copy">正在加载跟进记录…</p> : null}
           {followUpLoadState === "error" && !followUps.length ? <p className="inline-warning" role="alert">{followUpLoadError}</p> : null}
-          <div className="follow-up-list">
+          <div className="follow-up-list customer-followup-history-list">
             {followUps.map((followUp) => {
               const followUpId = String(followUp.id);
               return (
