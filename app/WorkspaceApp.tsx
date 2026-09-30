@@ -4657,6 +4657,10 @@ function CustomerDetail({
   const newContactRef = useRef<HTMLFormElement | null>(null);
   const followUpRef = useRef<HTMLFormElement | null>(null);
   const followUpSectionRef = useRef<HTMLElement | null>(null);
+  const basicInformationRef = useRef<HTMLElement | null>(null);
+  const followUpCardRef = useRef<HTMLElement | null>(null);
+  const followUpHistoryRef = useRef<HTMLDivElement | null>(null);
+  const [followUpHistoryHeight, setFollowUpHistoryHeight] = useState<number | null>(null);
   const customerOrders = orders.filter(
     (order) =>
       order.customer_id === customer.id ||
@@ -4736,6 +4740,53 @@ function CustomerDetail({
     });
     return () => window.cancelAnimationFrame(frame);
   }, [focusFollowUps, onFollowUpsFocused]);
+
+  useEffect(() => {
+    const basicInformation = basicInformationRef.current;
+    const followUpCard = followUpCardRef.current;
+    const followUpHistory = followUpHistoryRef.current;
+    if (!basicInformation || !followUpCard || !followUpHistory) return;
+
+    let frame = 0;
+    const syncHistoryViewport = () => {
+      if (!window.matchMedia("(min-width: 921px)").matches) {
+        setFollowUpHistoryHeight((current) => (current === null ? current : null));
+        return;
+      }
+
+      const basicInformationBottom = basicInformation.getBoundingClientRect().bottom;
+      const historyTop = followUpHistory.getBoundingClientRect().top;
+      const cardBottom = followUpCard.getBoundingClientRect().bottom;
+      const historyBottom = followUpHistory.getBoundingClientRect().bottom;
+      const cardSpaceAfterHistory = Math.max(0, cardBottom - historyBottom);
+      const nextHeight = Math.max(
+        0,
+        Math.floor(basicInformationBottom - historyTop - cardSpaceAfterHistory),
+      );
+
+      setFollowUpHistoryHeight((current) => (current === nextHeight ? current : nextHeight));
+    };
+    const scheduleSync = () => {
+      window.cancelAnimationFrame(frame);
+      frame = window.requestAnimationFrame(syncHistoryViewport);
+    };
+
+    scheduleSync();
+    const resizeObserver =
+      typeof ResizeObserver === "undefined"
+        ? null
+        : new ResizeObserver(scheduleSync);
+    resizeObserver?.observe(basicInformation);
+    window.addEventListener("resize", scheduleSync);
+    const media = window.matchMedia("(min-width: 921px)");
+    media.addEventListener("change", scheduleSync);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      resizeObserver?.disconnect();
+      window.removeEventListener("resize", scheduleSync);
+      media.removeEventListener("change", scheduleSync);
+    };
+  }, [customer.id, followUpOpen, followUps.length, followUpHasMore, followUpLoadState]);
 
   const ratingFormChanged = useCallback(() => {
     const gradeChanged =
@@ -5388,7 +5439,7 @@ function CustomerDetail({
         </section>
       ) : null}
 
-      <section className="editor-section">
+      <section ref={basicInformationRef} className="editor-section">
         <div className="editor-heading">
           <div>
             <span>BASIC INFORMATION</span>
@@ -5553,7 +5604,7 @@ function CustomerDetail({
 
       </div>
       <aside ref={followUpSectionRef} className="customer-editor-followup-column" aria-label="客户联系与跟进">
-      <section className="editor-section customer-followup-editor">
+      <section ref={followUpCardRef} className="editor-section customer-followup-editor">
         <div className="customer-followup-top">
         <div className="editor-heading">
           <div>
@@ -5600,7 +5651,12 @@ function CustomerDetail({
           </form>
         ) : null}
         </div>
-        <div className="customer-followup-history" aria-label="历史跟进记录">
+        <div
+          ref={followUpHistoryRef}
+          className="customer-followup-history"
+          aria-label="历史跟进记录"
+          style={followUpHistoryHeight === null ? undefined : { height: `${followUpHistoryHeight}px` }}
+        >
           <div className="follow-up-history-heading"><h4>历史跟进记录</h4>{followUpTotal ? <small>{followUpTotal} 条</small> : null}</div>
           {followUpLoadState === "loading" && !followUps.length ? <p className="muted-copy">正在加载跟进记录…</p> : null}
           {followUpLoadState === "error" && !followUps.length ? <p className="inline-warning" role="alert">{followUpLoadError}</p> : null}
