@@ -14,6 +14,10 @@ function nullable(value: unknown, max = 5000) {
   return text(value, max) || null;
 }
 
+function hasOwn(value: Record<string, unknown>, key: string) {
+  return Object.prototype.hasOwnProperty.call(value, key);
+}
+
 function errorResponse(message: string, status = 400) {
   return Response.json({ error: message }, { status });
 }
@@ -372,19 +376,25 @@ export async function POST(request: Request) {
       if (!["potential_customer", "existing"].includes(lifecycle)) {
         return errorResponse("潜在线索不参与客户评级。", 409);
       }
-      const grade = normalizeCustomerGrade(lifecycle, payload.grade) || null;
-      const ratingReason = nullable(payload.ratingReason, 3000);
+      const grade = hasOwn(payload, "grade")
+        ? normalizeCustomerGrade(lifecycle, payload.grade) || null
+        : customer.grade || null;
+      const ratingReason = hasOwn(payload, "ratingReason")
+        ? nullable(payload.ratingReason, 3000)
+        : customer.rating_reason || null;
       if (lifecycle === "potential_customer") {
-        const purchaseIntent = ["high", "medium", "low", "unconfirmed"].includes(
-          text(payload.purchaseIntent, 30),
-        )
-          ? text(payload.purchaseIntent, 30)
-          : null;
-        const purchaseAbility = ["strong", "limited", "weak", "unconfirmed"].includes(
-          text(payload.purchaseAbility, 30),
-        )
-          ? text(payload.purchaseAbility, 30)
-          : null;
+        const purchaseIntentValue = text(payload.purchaseIntent, 30);
+        const purchaseIntent = hasOwn(payload, "purchaseIntent")
+          ? ["high", "medium", "low", "unconfirmed"].includes(purchaseIntentValue)
+            ? purchaseIntentValue
+            : null
+          : customer.purchase_intent || null;
+        const purchaseAbilityValue = text(payload.purchaseAbility, 30);
+        const purchaseAbility = hasOwn(payload, "purchaseAbility")
+          ? ["strong", "limited", "weak", "unconfirmed"].includes(purchaseAbilityValue)
+            ? purchaseAbilityValue
+            : null
+          : customer.purchase_ability || null;
         const gradeChanged = String(customer.grade || "") !== String(grade || "");
         const ratingReasonChanged =
           String(customer.rating_reason || "") !== String(ratingReason || "");

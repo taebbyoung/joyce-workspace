@@ -223,6 +223,31 @@ test("Customers updates locally and AI rating remains explicit and unsaved", asy
   assert.match(migration, /backup_customers_priority_20260817/);
 });
 
+test("customer rating saves accept independent Grade and Rating Reason changes", async () => {
+  const [app, customersRoute] = await Promise.all([
+    source("app/WorkspaceApp.tsx"),
+    source("app/api/customers/route.ts"),
+  ]);
+  const customerDetail = app.slice(
+    app.indexOf("function CustomerDetail"),
+    app.indexOf("function LeadsView"),
+  );
+  const updateRating = customersRoute.slice(
+    customersRoute.indexOf('if (action === "update_rating")'),
+    customersRoute.indexOf('if (action === "save_next_follow_up")'),
+  );
+
+  assert.match(customerDetail, /const gradeChanged =[\s\S]*const ratingReasonChanged =/);
+  assert.match(customerDetail, /return gradeChanged \|\| ratingReasonChanged/);
+  assert.match(customerDetail, /payload: \{ grade, purchaseIntent, purchaseAbility, ratingReason \}/);
+  assert.match(updateRating, /hasOwn\(payload, "grade"\)[\s\S]*customer\.grade \|\| null/);
+  assert.match(updateRating, /hasOwn\(payload, "ratingReason"\)[\s\S]*customer\.rating_reason \|\| null/);
+  assert.match(updateRating, /reviewChanged = gradeChanged \|\| ratingReasonChanged/);
+  assert.match(updateRating, /reviewChanged \? now : customer\.last_reviewed_at/);
+  assert.match(updateRating, /await audit\("customer_rating_updated"/);
+  assert.doesNotMatch(updateRating, /next_follow/);
+});
+
 test("Existing Customers show a concise next action without changing Potential demand", async () => {
   const app = await source("app/WorkspaceApp.tsx");
   const styles = await source("app/globals.css");
