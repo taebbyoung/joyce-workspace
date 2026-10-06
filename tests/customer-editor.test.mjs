@@ -411,6 +411,8 @@ test("customer follow-ups are explicitly recorded, lightweight, and local", () =
   assert.match(app, /确认删除这条跟进记录？/);
   assert.match(styles, /\.follow-up-item p[\s\S]*-webkit-line-clamp: 3/);
   assert.match(styles, /\.follow-up-item p\.expanded[\s\S]*overflow: visible/);
+  assert.match(styles, /\.customer-followup-history-list\s*\{[\s\S]*align-content:\s*start[\s\S]*grid-auto-rows:\s*max-content/);
+  assert.match(styles, /\.customer-followup-history-list\s*>\s*\.follow-up-item\s*\{[\s\S]*align-self:\s*start/);
   assert.doesNotMatch(customerDetail, /DateTimeInput|默认仅加载最近 3 条|查看全部（/);
   assert.doesNotMatch(customerDetail, /loadWorkspace/);
   assert.match(route, /action === "record_follow_up"/);
