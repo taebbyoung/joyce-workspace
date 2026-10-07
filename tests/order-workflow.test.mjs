@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { DatabaseSync } from "node:sqlite";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
@@ -26,6 +27,7 @@ import {
   isExpectedShippingInMonth,
   sumAttributedVehicleSales,
 } from "../lib/order-sales-attribution.ts";
+import { normalizeOrderPayments } from "../lib/order-payments.ts";
 
 const root = new URL("../", import.meta.url);
 const source = (path) => readFile(new URL(path, root), "utf8");
@@ -617,6 +619,56 @@ test("order payments use child records while full-payment date remains on the or
   assert.match(ordersView, /order-payment-record[\s\S]*编辑[\s\S]*删除/);
   assert.doesNotMatch(importer, /requestAi|gemini|deepseek/i);
   assert.match(importer, /groupOrderImportRows/);
+});
+
+test("payment mutations normalize API rows before retaining them for later order saves", () => {
+  const apiRows = [
+    { id: "P1", order_id: "order-1", payment_type: "deposit", payment_date: "2026-07-17", amount: 55000, sort_order: 0 },
+    { id: "B1", order_id: "order-1", payment_type: "balance", payment_date: "2026-10-07", amount: 11000, sort_order: 1 },
+    { id: "B2", order_id: "order-1", payment_type: "balance", payment_date: "2026-10-07", amount: 11000, sort_order: 2 },
+    { id: "B3", order_id: "order-1", payment_type: "balance", payment_date: "2026-10-07", amount: 11000, sort_order: 3 },
+  ];
+  const payments = normalizeOrderPayments(apiRows);
+
+  assert.ok(payments);
+  assert.deepEqual(payments.map((payment) => [payment.id, payment.paymentType, payment.paymentDate, payment.sortOrder]), [
+    ["P1", "deposit", "2026-07-17", 0],
+    ["B1", "balance", "2026-10-07", 1],
+    ["B2", "balance", "2026-10-07", 2],
+    ["B3", "balance", "2026-10-07", 3],
+  ]);
+  assert.equal(normalizeOrderPayments(undefined), null);
+
+  const db = new DatabaseSync(":memory:");
+  try {
+    db.exec("CREATE TABLE order_payments (id TEXT PRIMARY KEY, order_id TEXT NOT NULL, payment_type TEXT NOT NULL, payment_date TEXT NOT NULL, amount REAL NOT NULL, sort_order INTEGER NOT NULL)");
+    const insert = db.prepare("INSERT INTO order_payments (id, order_id, payment_type, payment_date, amount, sort_order) VALUES (?, ?, ?, ?, ?, ?)");
+    for (const row of apiRows) {
+      insert.run(row.id, row.order_id, row.payment_type, row.payment_date, row.amount, row.sort_order);
+    }
+
+    db.prepare("DELETE FROM order_payments WHERE id = ? AND order_id = ?").run("B2", "order-1");
+    const afterDelete = normalizeOrderPayments(db.prepare("SELECT * FROM order_payments WHERE order_id = ? ORDER BY sort_order ASC").all("order-1"));
+    assert.ok(afterDelete);
+    assert.deepEqual(afterDelete.map((payment) => payment.id), ["P1", "B1", "B3"]);
+    assert.deepEqual(afterDelete.filter((payment) => payment.paymentType === "deposit").map((payment) => payment.id), ["P1"]);
+    assert.deepEqual(afterDelete.filter((payment) => payment.paymentType === "balance").map((payment) => payment.id), ["B1", "B3"]);
+
+    db.prepare("DELETE FROM order_payments WHERE order_id = ?").run("order-1");
+    for (const payment of afterDelete) {
+      insert.run(payment.id, payment.orderId, payment.paymentType, payment.paymentDate, payment.amount, payment.sortOrder);
+    }
+    assert.deepEqual(
+      db.prepare("SELECT id, payment_type FROM order_payments WHERE order_id = ? ORDER BY sort_order ASC").all("order-1").map((row) => ({ ...row })),
+      [
+        { id: "P1", payment_type: "deposit" },
+        { id: "B1", payment_type: "balance" },
+        { id: "B3", payment_type: "balance" },
+      ],
+    );
+  } finally {
+    db.close();
+  }
 });
 
 test("active and completed orders share one quiet typography hierarchy", async () => {

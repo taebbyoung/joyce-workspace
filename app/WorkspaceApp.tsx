@@ -41,6 +41,7 @@ import {
   sortCompletedOrders,
 } from "@/lib/order-workflow";
 import { requiresOrderSalesImpactConfirmation } from "@/lib/order-sales-impact";
+import { normalizeOrderPayments } from "@/lib/order-payments";
 import {
   buildAttributedCustomerContribution,
   buildAttributedSalesTrend,
@@ -6633,13 +6634,7 @@ function OrdersView({
     const savedPayments = order
       ? orderPaymentsByOrderId.get(String(order.id)) || []
       : [];
-    setEditorPayments(savedPayments.map((payment) => ({
-      id: payment.id,
-      paymentType: payment.payment_type,
-      paymentDate: String(payment.payment_date || "").slice(0, 10),
-      amount: payment.amount ?? "",
-      sortOrder: payment.sort_order ?? 0,
-    })));
+    setEditorPayments(normalizeOrderPayments(savedPayments) || []);
     setAddingPaymentType(null);
     setPaymentDraftDate("");
     setPaymentDraftAmount("");
@@ -6733,6 +6728,17 @@ function OrdersView({
     setPaymentEditDraft(null);
   }
 
+  function applyPaymentMutation(result: Row) {
+    const payments = normalizeOrderPayments(result.orderPayments);
+    if (!payments) {
+      setMessage("付款记录响应无效，已保留当前付款记录。请关闭订单后再次进入确认。");
+      return false;
+    }
+    setEditorPayments(payments);
+    onOrderSaved(result);
+    return true;
+  }
+
   async function confirmPayment() {
     const amount = Number(paymentDraftAmount);
     if (!addingPaymentType || !paymentDraftDate || !Number.isFinite(amount) || amount < 0) {
@@ -6760,8 +6766,7 @@ function OrdersView({
         body: JSON.stringify({ action: "save_payment", orderId: selectedOrder.id, ...draft }),
       });
       const result = await readApiJson(response, "付款记录保存失败。");
-      setEditorPayments(result.orderPayments || []);
-      onOrderSaved(result);
+      if (!applyPaymentMutation(result)) return;
       setAddingPaymentType(null);
       setPaymentDraftDate("");
       setPaymentDraftAmount("");
@@ -6782,8 +6787,7 @@ function OrdersView({
           body: JSON.stringify({ action: "delete_payment", orderId: selectedOrder.id, paymentId: id }),
         });
         const result = await readApiJson(response, "付款记录删除失败。");
-        setEditorPayments(result.orderPayments || []);
-        onOrderSaved(result);
+        if (!applyPaymentMutation(result)) return;
       } catch (error) {
         setMessage(error instanceof Error ? error.message : "付款记录删除失败。");
         return;
@@ -6820,8 +6824,7 @@ function OrdersView({
         body: JSON.stringify({ action: "save_payment", orderId: selectedOrder.id, paymentId: updatedPayment.id, ...updatedPayment }),
       });
       const result = await readApiJson(response, "付款记录保存失败。");
-      setEditorPayments(result.orderPayments || []);
-      onOrderSaved(result);
+      if (!applyPaymentMutation(result)) return;
       setEditingPaymentId("");
       setPaymentEditDraft(null);
     } catch (error) {
