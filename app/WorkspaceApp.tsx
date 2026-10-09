@@ -74,6 +74,7 @@ import {
 } from "@/lib/customer-editor-state";
 import {
   createWorkspaceBootstrapRequest,
+  isValidHomeBootstrapResponse,
   WorkspaceBootstrapTimeoutError,
 } from "@/lib/workspace-bootstrap";
 import {
@@ -744,6 +745,9 @@ export function WorkspaceApp() {
     try {
       const result = await request.promise;
       if (requestId !== homeBootstrapRequestIdRef.current) return false;
+      if (!isValidHomeBootstrapResponse(result)) {
+        throw new Error("首页响应格式无效，请重试。");
+      }
       setHomeState(resolveAsyncData(result));
       return true;
     } catch (requestError) {

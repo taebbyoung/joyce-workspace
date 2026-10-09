@@ -1,4 +1,6 @@
-export const WORKSPACE_BOOTSTRAP_TIMEOUT_MS = 12_000;
+import type { HomeBootstrapData } from "./home-bootstrap.ts";
+
+export const WORKSPACE_BOOTSTRAP_TIMEOUT_MS = 20_000;
 
 export class WorkspaceBootstrapTimeoutError extends Error {
   constructor() {
@@ -19,37 +21,64 @@ export function createWorkspaceBootstrapRequest<T>(
   timeoutMs = WORKSPACE_BOOTSTRAP_TIMEOUT_MS,
 ): WorkspaceBootstrapRequest<T> {
   const controller = new AbortController();
-  let timedOut = false;
+  let stopped = false;
+  let rejectInterruption!: (error: Error) => void;
+  const interruption = new Promise<never>((_resolve, reject) => {
+    rejectInterruption = reject;
+  });
   const timeoutId = globalThis.setTimeout(() => {
-    timedOut = true;
+    if (stopped) return;
+    stopped = true;
+    rejectInterruption(new WorkspaceBootstrapTimeoutError());
     controller.abort();
   }, timeoutMs);
 
-  const promise = (async () => {
-    try {
-      const response = await fetchImpl(path, {
-        cache: "no-store",
-        signal: controller.signal,
-      });
-      if (timedOut) throw new WorkspaceBootstrapTimeoutError();
-
-      const result = await response.json();
-      if (timedOut) throw new WorkspaceBootstrapTimeoutError();
-      if (!response.ok) {
-        throw new Error(result.error || "工作区加载失败。");
-      }
-      return result as T;
-    } catch (error) {
-      if (timedOut) throw new WorkspaceBootstrapTimeoutError();
-      throw error;
-    } finally {
-      globalThis.clearTimeout(timeoutId);
+  const request = (async () => {
+    const response = await fetchImpl(path, {
+      cache: "no-store",
+      signal: controller.signal,
+    });
+    const result = await response.json();
+    if (!response.ok) {
+      throw new Error(result?.error || "工作区加载失败。");
     }
+    return result as T;
   })();
+  const promise = Promise.race([request, interruption]).finally(() => {
+    stopped = true;
+    globalThis.clearTimeout(timeoutId);
+  });
 
   return {
-    abort: () => controller.abort(),
+    abort: () => {
+      if (stopped) return;
+      stopped = true;
+      const error = new Error("Request aborted");
+      error.name = "AbortError";
+      rejectInterruption(error);
+      controller.abort();
+    },
     promise,
     signal: controller.signal,
   };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+export function isValidHomeBootstrapResponse(value: unknown): value is HomeBootstrapData {
+  if (!isRecord(value) || !isRecord(value.metrics)) return false;
+  const metricKeys = [
+    "currentYearSales", "currentYearVehicleSales", "currentYearAccessorySales",
+    "activeOrderValue", "existingCustomers", "aPotentialCustomers",
+    "potentialLeads", "currencyReviewCount",
+  ];
+  return typeof value.generatedAt === "string" &&
+    metricKeys.every((key) => typeof value.metrics[key] === "number") &&
+    Array.isArray(value.salesTrend) && value.salesTrend.every(isRecord) &&
+    Array.isArray(value.contribution) && value.contribution.every(isRecord) &&
+    Array.isArray(value.todayTasks) && value.todayTasks.every(isRecord) &&
+    typeof value.todayTaskTotal === "number" &&
+    Array.isArray(value.attention) && value.attention.every(isRecord);
 }

@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import { buildHomeBootstrapData } from "../lib/home-bootstrap.ts";
+import { isValidHomeBootstrapResponse, createWorkspaceBootstrapRequest } from "../lib/workspace-bootstrap.ts";
 
 const root = new URL("../", import.meta.url);
 
@@ -69,6 +70,60 @@ test("Home bootstrap returns only Home summaries while preserving Today and Atte
   assert.equal(data.metrics.currentYearSales, 120);
   assert.deepEqual(data.salesTrend, [{ month: "2026-10", amount: 100 }]);
   assert.deepEqual(data.contribution, [{ customer_code: "EX01", amount: 100 }]);
+  assert.equal(isValidHomeBootstrapResponse(data), true);
+});
+
+test("Home bootstrap rejects malformed successful payloads before render", () => {
+  const valid = buildHomeBootstrapData({
+    today: "2026-10-09",
+    metrics: null,
+    currentYearAccessorySales: 0,
+    customerCounts: null,
+    salesAttributionOrders: [],
+    tasks: [],
+    attentionCustomers: [],
+    nonCustomerAttention: [],
+  });
+  assert.equal(isValidHomeBootstrapResponse(valid), true);
+  for (const invalid of [
+    {},
+    null,
+    { ...valid, todayTasks: undefined },
+    { ...valid, metrics: null },
+    { ...valid, attention: null },
+    { ...valid, salesTrend: [null] },
+  ]) {
+    assert.equal(isValidHomeBootstrapResponse(invalid), false);
+  }
+});
+
+test("Home request distinguishes valid, malformed JSON, HTTP 500, and network rejection", async () => {
+  const valid = buildHomeBootstrapData({
+    today: "2026-10-09",
+    metrics: null,
+    currentYearAccessorySales: 0,
+    customerCounts: null,
+    salesAttributionOrders: [],
+    tasks: [],
+    attentionCustomers: [],
+    nonCustomerAttention: [],
+  });
+  const success = createWorkspaceBootstrapRequest(
+    "/api/home", async () => ({ ok: true, json: async () => valid }), 100,
+  );
+  assert.equal(isValidHomeBootstrapResponse(await success.promise), true);
+  const malformed = createWorkspaceBootstrapRequest(
+    "/api/home", async () => ({ ok: true, json: async () => { throw new SyntaxError("bad JSON"); } }), 100,
+  );
+  await assert.rejects(malformed.promise, SyntaxError);
+  const serverError = createWorkspaceBootstrapRequest(
+    "/api/home", async () => ({ ok: false, json: async () => ({ error: "server error" }) }), 100,
+  );
+  await assert.rejects(serverError.promise, /server error/);
+  const networkError = createWorkspaceBootstrapRequest(
+    "/api/home", async () => { throw new TypeError("network failed"); }, 100,
+  );
+  await assert.rejects(networkError.promise, /network failed/);
 });
 
 test("Home API is narrow and WorkspaceApp defers the full workspace request", async () => {

@@ -1,4 +1,5 @@
-const CACHE_NAME = "joyce-workspace-shell-v2";
+const CACHE_PREFIX = "joyce-workspace-shell-";
+const CACHE_NAME = `${CACHE_PREFIX}v3`;
 const APP_SHELL = ["/", "/manifest.webmanifest"];
 
 self.addEventListener("install", (event) => {
@@ -12,11 +13,13 @@ self.addEventListener("activate", (event) => {
       .keys()
       .then((keys) =>
         Promise.all(
-          keys.filter((key) => key !== CACHE_NAME).map((key) => caches.delete(key)),
+          keys
+            .filter((key) => key.startsWith(CACHE_PREFIX) && key !== CACHE_NAME)
+            .map((key) => caches.delete(key)),
         ),
-      ),
+      )
+      .then(() => self.clients.claim()),
   );
-  self.clients.claim();
 });
 
 self.addEventListener("fetch", (event) => {
@@ -38,6 +41,17 @@ self.addEventListener("fetch", (event) => {
         }
         return response;
       })
-      .catch(() => caches.match(request).then((cached) => cached || caches.match("/"))),
+      .catch((error) =>
+        caches.match(request).then((cached) => {
+          if (cached) return cached;
+          if (request.mode === "navigate" || request.destination === "document") {
+            return caches.match("/").then((page) => {
+              if (page) return page;
+              throw error;
+            });
+          }
+          throw error;
+        }),
+      ),
   );
 });
