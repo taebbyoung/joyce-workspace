@@ -73,6 +73,10 @@ import {
   type CustomerEditorValue,
 } from "@/lib/customer-editor-state";
 import {
+  createWorkspaceBootstrapRequest,
+  WorkspaceBootstrapTimeoutError,
+} from "@/lib/workspace-bootstrap";
+import {
   findOrderImportHeaderRow,
   orderImportFields,
   primaryOrderImportFieldKeys,
@@ -660,6 +664,14 @@ export function WorkspaceApp() {
   const [workspaceState, setWorkspaceState] = useState<
     AsyncDataState<WorkspaceData>
   >(() => beginAsyncDataLoad(createAsyncDataState()));
+  const [workspaceStartupFailure, setWorkspaceStartupFailure] = useState<
+    "timeout" | null
+  >(null);
+  const workspaceBootstrapRequestRef = useRef<{
+    id: number;
+    request: ReturnType<typeof createWorkspaceBootstrapRequest<WorkspaceData>>;
+  } | null>(null);
+  const workspaceBootstrapRequestIdRef = useRef(0);
   const data = workspaceState.data;
   const setData = useCallback(
     (
@@ -710,24 +722,50 @@ export function WorkspaceApp() {
   }, []);
 
   const loadWorkspace = useCallback(async () => {
+    workspaceBootstrapRequestRef.current?.request.abort();
+    const requestId = ++workspaceBootstrapRequestIdRef.current;
+    const request = createWorkspaceBootstrapRequest<WorkspaceData>();
+    workspaceBootstrapRequestRef.current = { id: requestId, request };
+    setWorkspaceStartupFailure(null);
     setWorkspaceState((current) => beginAsyncDataLoad(current));
     try {
-      const response = await fetch("/api/workspace", { cache: "no-store" });
-      const result = await response.json();
-      if (!response.ok) throw new Error(result.error || "工作区加载失败。");
+      const result = await request.promise;
+      if (requestId !== workspaceBootstrapRequestIdRef.current) return;
       setWorkspaceState(resolveAsyncData(result));
     } catch (requestError) {
+      if (
+        requestId !== workspaceBootstrapRequestIdRef.current ||
+        request.signal.aborted && !(requestError instanceof WorkspaceBootstrapTimeoutError)
+      ) {
+        return;
+      }
+      setWorkspaceStartupFailure(
+        requestError instanceof WorkspaceBootstrapTimeoutError ? "timeout" : null,
+      );
       setWorkspaceState((current) =>
         rejectAsyncData(
           current,
-          requestError instanceof Error ? requestError.message : "工作区加载失败。",
+          requestError instanceof WorkspaceBootstrapTimeoutError
+            ? "网络连接较慢，或服务暂时未响应。请重试。"
+            : requestError instanceof Error
+              ? requestError.message
+              : "工作区加载失败。",
         ),
       );
+    } finally {
+      if (workspaceBootstrapRequestRef.current?.id === requestId) {
+        workspaceBootstrapRequestRef.current = null;
+      }
     }
   }, []);
 
   useEffect(() => {
-    loadWorkspace();
+    void loadWorkspace();
+    return () => {
+      workspaceBootstrapRequestIdRef.current += 1;
+      workspaceBootstrapRequestRef.current?.request.abort();
+      workspaceBootstrapRequestRef.current = null;
+    };
   }, [loadWorkspace]);
 
   const showToast = (message: string) => {
@@ -1496,8 +1534,16 @@ export function WorkspaceApp() {
           </div>
         ) : !workspaceState.hasLoaded && workspaceState.error ? (
           <div className="error-state">
-            <strong>暂时无法打开工作区</strong>
-            <p>{workspaceState.error}</p>
+            <strong>
+              {workspaceStartupFailure === "timeout"
+                ? "工作台加载超时"
+                : "暂时无法打开工作区"}
+            </strong>
+            <p>
+              {workspaceStartupFailure === "timeout"
+                ? "网络连接较慢，或服务暂时未响应。请重试。"
+                : workspaceState.error}
+            </p>
             <button type="button" onClick={loadWorkspace}>
               重试
             </button>
