@@ -14,6 +14,7 @@ type WorkspaceBootstrapRequest<T> = {
 };
 
 export function createWorkspaceBootstrapRequest<T>(
+  path: string,
   fetchImpl: typeof fetch = fetch,
   timeoutMs = WORKSPACE_BOOTSTRAP_TIMEOUT_MS,
 ): WorkspaceBootstrapRequest<T> {
@@ -26,7 +27,7 @@ export function createWorkspaceBootstrapRequest<T>(
 
   const promise = (async () => {
     try {
-      const response = await fetchImpl("/api/workspace", {
+      const response = await fetchImpl(path, {
         cache: "no-store",
         signal: controller.signal,
       });

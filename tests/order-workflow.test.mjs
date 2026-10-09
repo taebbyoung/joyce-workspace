@@ -590,11 +590,15 @@ test("order workflow API is local, explicit and never calls AI", async () => {
   assert.doesNotMatch(app.slice(app.indexOf("function OrdersView("), app.indexOf("function AfterSalesView(")), /loadWorkspace\(/);
   assert.match(migration, /backup_v48_orders_workflow_20260813/);
   assert.match(migration, /completed_at TEXT/);
-  const workspaceRoute = await source("app/api/workspace/route.ts");
+  const [workspaceRoute, homeBootstrap] = await Promise.all([
+    source("app/api/workspace/route.ts"),
+    source("lib/home-bootstrap.ts"),
+  ]);
   assert.match(workspaceRoute, /SELECT \* FROM order_items ORDER BY order_id, rowid/);
-  assert.match(workspaceRoute, /sumAttributedVehicleSales/);
-  assert.match(workspaceRoute, /buildAttributedSalesTrend/);
-  assert.match(workspaceRoute, /buildAttributedCustomerContribution/);
+  assert.match(workspaceRoute, /buildHomeBootstrapData/);
+  assert.match(homeBootstrap, /sumAttributedVehicleSales/);
+  assert.match(homeBootstrap, /buildAttributedSalesTrend/);
+  assert.match(homeBootstrap, /buildAttributedCustomerContribution/);
   assert.doesNotMatch(workspaceRoute, /substr\(order_date, 1, [47]\)/);
 });
 

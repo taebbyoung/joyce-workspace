@@ -85,7 +85,12 @@ test("task mutations use local updates without reloading the workspace", async (
   assert.match(mutationSource, /restorePreviousTask\(\)/);
   assert.match(mutationSource, /work_sort_order/);
   assert.doesNotMatch(mutationSource, /await loadWorkspace\(\)/);
-  assert.match(submitSource, /if \(optimisticTask\)[\s\S]*return(?: true)?;[\s\S]*await loadWorkspace\(\)/);
+  const optimisticTaskBranch = submitSource.slice(
+    submitSource.indexOf("if (optimisticTask) {", submitSource.indexOf("const result")),
+    submitSource.indexOf('if (recordModal === "project"', submitSource.indexOf("const result")),
+  );
+  assert.match(optimisticTaskBranch, /closeRecord\(true\)[\s\S]*return true;/);
+  assert.doesNotMatch(optimisticTaskBranch, /loadWorkspace\(/);
   assert.doesNotMatch(tasksRoute, /requestAi|rankWorkPriority|rankAfterCreation/);
   assert.match(tasksRoute, /Object\.prototype\.hasOwnProperty/);
 });
@@ -497,30 +502,32 @@ test("Completed uses a paged task list and side-by-side projects with final resu
 });
 
 test("Need Your Attention routes only by source type and source id", async () => {
-  const [app, workspaceRoute] = await Promise.all([
+  const [app, homeRoute, homeBootstrap] = await Promise.all([
     source("app/WorkspaceApp.tsx"),
-    source("app/api/workspace/route.ts"),
+    source("app/api/home/route.ts"),
+    source("lib/home-bootstrap.ts"),
   ]);
   const routerStart = app.indexOf("function openAttentionTarget(");
   const routerEnd = app.indexOf("return (", routerStart);
   const router = app.slice(routerStart, routerEnd);
-  const attentionStart = workspaceRoute.indexOf("const nonCustomerAttention");
-  const attentionEnd = workspaceRoute.indexOf("const normalizedTasks", attentionStart);
-  const attentionQuery = workspaceRoute.slice(attentionStart, attentionEnd);
+  const attentionQuery = homeBootstrap.slice(
+    homeBootstrap.indexOf("export const homeNonCustomerAttentionSql"),
+  );
   const homeStart = app.indexOf("function HomeView(");
   const workStart = app.indexOf("function WorkView(", homeStart);
   const homeSource = app.slice(homeStart, workStart);
 
-  assert.match(workspaceRoute, /'task' AS source_type|SELECT 'task', id, NULL, 'task', id/);
-  assert.match(workspaceRoute, /'order' AS source_type, r\.order_id AS source_id/);
-  assert.match(workspaceRoute, /buildCustomerFollowUpAttention/);
+  assert.match(homeRoute, /homeNonCustomerAttentionSql/);
+  assert.match(attentionQuery, /'task' AS source_type|SELECT 'task', id, NULL, 'task', id/);
+  assert.match(attentionQuery, /'order' AS source_type, r\.order_id AS source_id/);
+  assert.match(homeBootstrap, /buildCustomerFollowUpAttention/);
   assert.match(
     attentionQuery,
     /COALESCE\(NULLIF\(reminder_date, ''\), NULLIF\(next_action_date, ''\), NULLIF\(due_date, ''\)\) < \?/,
   );
   assert.match(attentionQuery, /status IN \('pending', 'in_progress'/);
   assert.match(attentionQuery, /attention_date/);
-  assert.match(attentionQuery, /customerAttention/);
+  assert.match(homeBootstrap, /customerAttention/);
   assert.doesNotMatch(attentionQuery, /due_date < \?|LIMIT 10/);
   assert.match(homeSource, /groupHomeAttention\(data\.attention\)/);
   assert.match(homeSource, /className="attention-total">\{homeAttention\.total\} 条/);
@@ -889,7 +896,7 @@ test("order shipping reminders are method-aware and accessory sales stay statist
   const migration = await source("drizzle/0010_order_shipping_accessory_sales.sql");
   const riskLogic = await source("lib/order-risk.ts");
   const orderRoute = await source("app/api/orders/route.ts");
-  const workspaceRoute = await source("app/api/workspace/route.ts");
+  const homeBootstrap = await source("lib/home-bootstrap.ts");
   const workspace = await source("app/WorkspaceApp.tsx");
 
   assert.match(migration, /backup_v40_orders_shipping_20260731/);
@@ -904,8 +911,8 @@ test("order shipping reminders are method-aware and accessory sales stay statist
   assert.match(orderRoute, /action === "acknowledge_risk"/);
   assert.match(orderRoute, /status = 'acknowledged'/);
   assert.match(orderRoute, /action === "save_accessory_sales"/);
-  assert.match(workspaceRoute, /currentYearVehicleSales/);
-  assert.match(workspaceRoute, /currentYearAccessorySales/);
+  assert.match(homeBootstrap, /currentYearVehicleSales/);
+  assert.match(homeBootstrap, /currentYearAccessorySales/);
   assert.match(workspace, /Sea Freight 海运/);
   assert.match(workspace, /Air Freight 空运/);
   assert.match(workspace, /Tracking No\./);

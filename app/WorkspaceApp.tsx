@@ -81,6 +81,7 @@ import {
   orderImportFields,
   primaryOrderImportFieldKeys,
 } from "@/lib/order-import-mapping";
+import type { HomeBootstrapData } from "@/lib/home-bootstrap";
 import {
   EDITABLE_LEAD_STATUSES,
   LEAD_COMPANY_TYPES,
@@ -273,22 +274,7 @@ function workspaceLoadingLabel(view: View) {
   return labels[view];
 }
 
-type WorkspaceData = {
-  generatedAt: string;
-  metrics: {
-    currentYearSales: number;
-    currentYearVehicleSales: number;
-    currentYearAccessorySales: number;
-    activeOrderValue: number;
-    existingCustomers: number;
-    aPotentialCustomers: number;
-    potentialLeads: number;
-    currencyReviewCount: number;
-  };
-  salesTrend: Array<{ month: string; amount: number }>;
-  contribution: Array<{ customer_code: string; amount: number }>;
-  todayTasks: Row[];
-  attention: Row[];
+type WorkspaceData = HomeBootstrapData & {
   tasks: Row[];
   customers: Row[];
   contacts: Row[];
@@ -305,6 +291,10 @@ type WorkspaceData = {
   content: Row[];
   integrity: Row;
 };
+
+function viewRequiresWorkspaceData(view: View) {
+  return ["work", "customers", "orders", "knowledge", "content", "settings"].includes(view);
+}
 
 type AfterSalesPagination = {
   page: number;
@@ -661,17 +651,29 @@ function Modal({
 export function WorkspaceApp() {
   const [view, setView] = useState<View>("home");
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [homeState, setHomeState] = useState<AsyncDataState<HomeBootstrapData>>(
+    () => beginAsyncDataLoad(createAsyncDataState()),
+  );
   const [workspaceState, setWorkspaceState] = useState<
     AsyncDataState<WorkspaceData>
-  >(() => beginAsyncDataLoad(createAsyncDataState()));
+  >(() => createAsyncDataState());
+  const homeData = homeState.data;
   const [workspaceStartupFailure, setWorkspaceStartupFailure] = useState<
     "timeout" | null
   >(null);
+  const [workspaceLoadFailure, setWorkspaceLoadFailure] = useState("");
+  const homeBootstrapRequestRef = useRef<{
+    id: number;
+    request: ReturnType<typeof createWorkspaceBootstrapRequest<HomeBootstrapData>>;
+  } | null>(null);
+  const homeBootstrapRequestIdRef = useRef(0);
   const workspaceBootstrapRequestRef = useRef<{
     id: number;
     request: ReturnType<typeof createWorkspaceBootstrapRequest<WorkspaceData>>;
   } | null>(null);
   const workspaceBootstrapRequestIdRef = useRef(0);
+  const workspaceLoadPromiseRef = useRef<Promise<boolean> | null>(null);
+  const workspaceLoadedRef = useRef(false);
   const data = workspaceState.data;
   const setData = useCallback(
     (
@@ -721,52 +723,116 @@ export function WorkspaceApp() {
     );
   }, []);
 
-  const loadWorkspace = useCallback(async () => {
-    workspaceBootstrapRequestRef.current?.request.abort();
-    const requestId = ++workspaceBootstrapRequestIdRef.current;
-    const request = createWorkspaceBootstrapRequest<WorkspaceData>();
-    workspaceBootstrapRequestRef.current = { id: requestId, request };
+  useEffect(() => {
+    if (!data || attentionTarget?.type !== "customer") return;
+    const customer = data.customers.find(
+      (item) => String(item.id) === attentionTarget.id,
+    );
+    if (!customer) return;
+    setSelectedCustomer(customer);
+    setCustomerFollowUpFocusId(attentionTarget.id);
+    consumeAttentionTarget(attentionTarget);
+  }, [attentionTarget, data, consumeAttentionTarget]);
+
+  const loadHome = useCallback(async () => {
+    homeBootstrapRequestRef.current?.request.abort();
+    const requestId = ++homeBootstrapRequestIdRef.current;
+    const request = createWorkspaceBootstrapRequest<HomeBootstrapData>("/api/home");
+    homeBootstrapRequestRef.current = { id: requestId, request };
     setWorkspaceStartupFailure(null);
-    setWorkspaceState((current) => beginAsyncDataLoad(current));
+    setHomeState((current) => beginAsyncDataLoad(current));
     try {
       const result = await request.promise;
-      if (requestId !== workspaceBootstrapRequestIdRef.current) return;
-      setWorkspaceState(resolveAsyncData(result));
+      if (requestId !== homeBootstrapRequestIdRef.current) return false;
+      setHomeState(resolveAsyncData(result));
+      return true;
     } catch (requestError) {
       if (
-        requestId !== workspaceBootstrapRequestIdRef.current ||
+        requestId !== homeBootstrapRequestIdRef.current ||
         request.signal.aborted && !(requestError instanceof WorkspaceBootstrapTimeoutError)
       ) {
-        return;
+        return false;
       }
       setWorkspaceStartupFailure(
         requestError instanceof WorkspaceBootstrapTimeoutError ? "timeout" : null,
       );
-      setWorkspaceState((current) =>
+      setHomeState((current) =>
         rejectAsyncData(
           current,
           requestError instanceof WorkspaceBootstrapTimeoutError
             ? "网络连接较慢，或服务暂时未响应。请重试。"
             : requestError instanceof Error
               ? requestError.message
-              : "工作区加载失败。",
+              : "首页加载失败。",
         ),
       );
+      return false;
     } finally {
-      if (workspaceBootstrapRequestRef.current?.id === requestId) {
-        workspaceBootstrapRequestRef.current = null;
+      if (homeBootstrapRequestRef.current?.id === requestId) {
+        homeBootstrapRequestRef.current = null;
       }
     }
   }, []);
 
+  const loadWorkspace = useCallback(async (force = false): Promise<boolean> => {
+    if (!force && workspaceLoadedRef.current) return true;
+    if (!force && workspaceLoadPromiseRef.current) {
+      return workspaceLoadPromiseRef.current;
+    }
+    workspaceBootstrapRequestRef.current?.request.abort();
+    const requestId = ++workspaceBootstrapRequestIdRef.current;
+    const request = createWorkspaceBootstrapRequest<WorkspaceData>("/api/workspace");
+    workspaceBootstrapRequestRef.current = { id: requestId, request };
+    setWorkspaceLoadFailure("");
+    setWorkspaceState((current) => beginAsyncDataLoad(current));
+    const pending = (async () => {
+      try {
+        const result = await request.promise;
+        if (requestId !== workspaceBootstrapRequestIdRef.current) return false;
+        workspaceLoadedRef.current = true;
+        setWorkspaceState(resolveAsyncData(result));
+        return true;
+      } catch (requestError) {
+        if (
+          requestId !== workspaceBootstrapRequestIdRef.current ||
+          request.signal.aborted && !(requestError instanceof WorkspaceBootstrapTimeoutError)
+        ) {
+          return false;
+        }
+        const message = requestError instanceof WorkspaceBootstrapTimeoutError
+          ? "工作区加载超时，请重试。"
+          : requestError instanceof Error
+            ? requestError.message
+            : "工作区加载失败。";
+        setWorkspaceLoadFailure(message);
+        setWorkspaceState((current) => rejectAsyncData(current, message));
+        return false;
+      } finally {
+        if (workspaceBootstrapRequestRef.current?.id === requestId) {
+          workspaceBootstrapRequestRef.current = null;
+          workspaceLoadPromiseRef.current = null;
+        }
+      }
+    })();
+    workspaceLoadPromiseRef.current = pending;
+    return pending;
+  }, []);
+
   useEffect(() => {
-    void loadWorkspace();
+    void loadHome();
     return () => {
+      homeBootstrapRequestIdRef.current += 1;
+      homeBootstrapRequestRef.current?.request.abort();
+      homeBootstrapRequestRef.current = null;
       workspaceBootstrapRequestIdRef.current += 1;
       workspaceBootstrapRequestRef.current?.request.abort();
       workspaceBootstrapRequestRef.current = null;
     };
-  }, [loadWorkspace]);
+  }, [loadHome]);
+
+  useEffect(() => {
+    if (viewRequiresWorkspaceData(view)) void loadWorkspace();
+  }, [view, loadWorkspace]);
 
   const showToast = (message: string) => {
     setToast(message);
@@ -796,7 +862,7 @@ export function WorkspaceApp() {
   ): Promise<TaskActionResult> {
     const previousTask = data?.tasks.find((task) => String(task.id) === id);
     const isCompletion = action === "status" && fields.status === "completed";
-    const previousTodayTask = data?.todayTasks.find(
+    const previousTodayTask = homeData?.todayTasks.find(
       (task) => String(task.id) === id,
     );
     const restorePreviousTask = () => {
@@ -889,6 +955,17 @@ export function WorkspaceApp() {
         };
       return updateTaskCollections(current, id, changed);
     });
+    if (result.task) {
+      setHomeState((current) =>
+        current.data
+          ? updateAsyncData(
+              current,
+              updateHomeTaskCollections(current.data, id, result.task),
+            )
+          : current,
+      );
+      void loadHome();
+    }
     return { ok: true, task: result.task };
   }
 
@@ -1064,6 +1141,7 @@ export function WorkspaceApp() {
         ],
       };
     });
+    void loadHome();
   }
 
   async function reorderOpenOrders(ids: string[]) {
@@ -1130,6 +1208,7 @@ export function WorkspaceApp() {
         attention: current.attention.filter((item) => item.order_id !== id),
       };
     });
+    void loadHome();
   }
 
   function applyAccessorySales(entry: Row) {
@@ -1153,6 +1232,7 @@ export function WorkspaceApp() {
         },
       };
     });
+    void loadHome();
   }
 
   function applyCustomerSnapshot(snapshot: Row) {
@@ -1195,6 +1275,7 @@ export function WorkspaceApp() {
         },
       };
     });
+    void loadHome();
   }
 
   function closeSelectedCustomer() {
@@ -1235,6 +1316,7 @@ export function WorkspaceApp() {
         },
       };
     });
+    void loadHome();
   }
 
   function applyOrderSnapshot(snapshot: Row) {
@@ -1269,6 +1351,7 @@ export function WorkspaceApp() {
         accessorySales: snapshot.accessorySales || current.accessorySales,
       };
     });
+    void loadHome();
   }
 
   async function acknowledgeOrderRisk(id: string) {
@@ -1287,6 +1370,7 @@ export function WorkspaceApp() {
       attention: current.attention.filter((item) => item.id !== id),
       orderRisks: current.orderRisks.filter((risk) => risk.id !== id),
     } : current);
+    void loadHome();
     showToast("已确认，此提醒不会重复出现");
   }
 
@@ -1383,7 +1467,8 @@ export function WorkspaceApp() {
       }
       closeRecord(true);
       showToast("已保存");
-      await loadWorkspace();
+      await loadWorkspace(true);
+      void loadHome();
       return true;
     } catch (error) {
       if (optimisticTask) {
@@ -1451,18 +1536,13 @@ export function WorkspaceApp() {
       customer: data?.customers,
     };
     const collection = collections[type];
-    if (collection && !collection.some((record) => String(record.id) === id)) {
+    if (data && collection && !collection.some((record) => String(record.id) === id)) {
       setAttentionTarget(null);
       navigateTo(targetView);
       showToast(`原关联${type === "task" ? "任务" : type === "project" ? "项目" : type === "order" ? "订单" : "客户"}已不存在。`);
       return;
     }
-    if (type === "customer") {
-      setSelectedCustomer(collection?.find((record) => String(record.id) === id) || null);
-      setCustomerFollowUpFocusId(id);
-    } else {
-      setAttentionTarget({ type, id });
-    }
+    setAttentionTarget({ type, id });
     navigateTo(targetView);
   }
 
@@ -1474,7 +1554,7 @@ export function WorkspaceApp() {
   return (
     <div className="workspace-shell">
       <aside className="sidebar">
-        <button className="brand" type="button" onClick={() => setView("home")}>
+        <button className="brand" type="button" onClick={() => navigateTo("home")}>
           <span className="brand-mark">J</span>
           <span>
             <strong>Joyce Workspace</strong>
@@ -1487,7 +1567,7 @@ export function WorkspaceApp() {
               className={view === item.id ? "nav-item active" : "nav-item"}
               key={item.id}
               type="button"
-              onClick={() => setView(item.id)}
+              onClick={() => navigateTo(item.id)}
             >
               <span>{item.label}</span>
               {item.hint ? <small>{item.hint}</small> : null}
@@ -1527,12 +1607,12 @@ export function WorkspaceApp() {
           </button>
         </nav>
 
-        {!workspaceState.hasLoaded && workspaceState.isInitialLoading ? (
+        {!homeState.hasLoaded && homeState.isInitialLoading ? (
           <div className="loading-state">
             <span />
-            <p>{workspaceLoadingLabel(view)}</p>
+            <p>{workspaceLoadingLabel("home")}</p>
           </div>
-        ) : !workspaceState.hasLoaded && workspaceState.error ? (
+        ) : !homeState.hasLoaded && homeState.error ? (
           <div className="error-state">
             <strong>
               {workspaceStartupFailure === "timeout"
@@ -1542,25 +1622,49 @@ export function WorkspaceApp() {
             <p>
               {workspaceStartupFailure === "timeout"
                 ? "网络连接较慢，或服务暂时未响应。请重试。"
-                : workspaceState.error}
+                : homeState.error}
             </p>
-            <button type="button" onClick={loadWorkspace}>
+            <button type="button" onClick={loadHome}>
               重试
             </button>
           </div>
-        ) : data ? (
+        ) : homeData ? (
           <>
             {view === "home" && (
               <HomeView
-                data={data}
+                data={homeData}
                 onTaskComplete={completeHomeTodayTask}
                 onOpenTask={openTaskFromHome}
-                onNavigate={setView}
+                onNavigate={navigateTo}
                 onOpenAttention={openAttentionTarget}
                 onAcknowledgeRisk={acknowledgeOrderRisk}
               />
             )}
-            {view === "work" && (
+            {view === "leads" && <BusinessDevelopmentView />}
+            {view === "after-sales" && (
+              <AfterSalesView
+                listCache={afterSalesListCache}
+                onListCacheChange={setAfterSalesListCache}
+                attentionTarget={attentionTarget}
+                onAttentionTargetConsumed={consumeAttentionTarget}
+              />
+            )}
+            {viewRequiresWorkspaceData(view) && !workspaceState.hasLoaded && workspaceState.isInitialLoading ? (
+              <div className="loading-state module-loading-state">
+                <span />
+                <p>{workspaceLoadingLabel(view)}</p>
+              </div>
+            ) : null}
+            {viewRequiresWorkspaceData(view) && !workspaceState.hasLoaded && workspaceState.error ? (
+              <div className="error-state module-loading-state">
+                <strong>模块加载失败</strong>
+                <p>{workspaceLoadFailure || workspaceState.error}</p>
+                <button type="button" onClick={() => void loadWorkspace(true)}>
+                  重试
+                </button>
+              </div>
+            ) : null}
+            {data && view === "work" && (
               <WorkView
                 data={data}
                 onTaskAction={updateTask}
@@ -1573,7 +1677,7 @@ export function WorkspaceApp() {
                 onCompletedTasksStateChange={setCompletedTasksState}
               />
             )}
-            {view === "customers" && (
+            {data && view === "customers" && (
               <CustomersView
                 data={data}
                 tab={customerTab}
@@ -1584,11 +1688,10 @@ export function WorkspaceApp() {
                 onAdd={() => openRecord("customer")}
               />
             )}
-            {view === "leads" && <BusinessDevelopmentView />}
-            {view === "orders" && (
+            {data && view === "orders" && (
               <OrdersView
                 data={data}
-                onNavigate={setView}
+                onNavigate={navigateTo}
                 onOrderSaved={applyOrderUpdate}
                 onOrderArchived={removeOrder}
                 onAccessorySalesSaved={applyAccessorySales}
@@ -1598,15 +1701,7 @@ export function WorkspaceApp() {
                 onAttentionTargetConsumed={consumeAttentionTarget}
               />
             )}
-            {view === "after-sales" && (
-              <AfterSalesView
-                listCache={afterSalesListCache}
-                onListCacheChange={setAfterSalesListCache}
-                attentionTarget={attentionTarget}
-                onAttentionTargetConsumed={consumeAttentionTarget}
-              />
-            )}
-            {view === "knowledge" && (
+            {data && view === "knowledge" && (
               <KnowledgeView
                 data={data}
                 tab={knowledgeTab}
@@ -1637,9 +1732,9 @@ export function WorkspaceApp() {
                 }
               />
             )}
-            {view === "content" && <ContentView data={data} />}
-            {view === "settings" && (
-              <SettingsView data={data} onReload={loadWorkspace} />
+            {data && view === "content" && <ContentView data={data} />}
+            {data && view === "settings" && (
+              <SettingsView data={data} onReload={() => loadWorkspace(true)} />
             )}
           </>
         ) : null}
@@ -1796,7 +1891,7 @@ function HomeView({
   onOpenAttention,
   onAcknowledgeRisk,
 }: {
-  data: WorkspaceData;
+  data: HomeBootstrapData;
   onTaskComplete: (id: string) => Promise<TaskActionResult>;
   onOpenTask: (task: Row) => void;
   onNavigate: (view: View) => void;
@@ -3531,6 +3626,44 @@ function updateTaskCollections(
   const updatedTask = tasks.find((task) => String(task.id) === id);
   const attention = syncWorkTaskAttention(current.attention, updatedTask, today);
   return { ...current, tasks, todayTasks, attention };
+}
+
+function updateHomeTaskCollections(
+  current: HomeBootstrapData,
+  id: string,
+  changed: Row,
+) {
+  const today = localDateText(new Date());
+  const previousIndex = current.todayTasks.findIndex((task) => String(task.id) === id);
+  const previousTask = previousIndex >= 0 ? current.todayTasks[previousIndex] : undefined;
+  const updatedTask = { ...previousTask, ...changed };
+  const status = String(updatedTask.status ?? "");
+  const reminderDate = String(
+    updatedTask.reminder_date ?? updatedTask.next_action_date ?? updatedTask.due_date ?? "",
+  ).slice(0, 10);
+  const isTodayTask = Boolean(
+    !updatedTask.deleted_at &&
+      !updatedTask.archived_at &&
+      !["completed", "已完成", "Completed", "cancelled", "Cancelled"].includes(status) &&
+      ["pending", "in_progress", "待处理", "进行中"].includes(status) &&
+      reminderDate &&
+      reminderDate <= today,
+  );
+  const withoutTask = current.todayTasks.filter((task) => String(task.id) !== id);
+  const todayTasks = isTodayTask
+    ? [updatedTask, ...withoutTask].slice(0, 6)
+    : withoutTask;
+  return {
+    ...current,
+    todayTasks,
+    todayTaskTotal: Math.max(
+      0,
+      current.todayTaskTotal +
+        (isTodayTask && previousIndex < 0 ? 1 : 0) -
+        (!isTodayTask && previousIndex >= 0 ? 1 : 0),
+    ),
+    attention: syncWorkTaskAttention(current.attention, updatedTask, today),
+  };
 }
 
 function weeklyRange(period: "current" | "previous") {

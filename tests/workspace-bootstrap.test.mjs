@@ -16,12 +16,14 @@ function response(body, ok = true) {
 
 test("workspace bootstrap resolves successful responses and surfaces API failures", async () => {
   const successful = createWorkspaceBootstrapRequest(
+    "/api/workspace",
     async () => response({ customers: [] }),
     50,
   );
   assert.deepEqual(await successful.promise, { customers: [] });
 
   const failed = createWorkspaceBootstrapRequest(
+    "/api/workspace",
     async () => response({ error: "服务异常" }, false),
     50,
   );
@@ -31,6 +33,7 @@ test("workspace bootstrap resolves successful responses and surfaces API failure
 test("workspace bootstrap aborts a timed out request and reports a distinct timeout", async () => {
   let requestSignal;
   const timedOut = createWorkspaceBootstrapRequest(
+    "/api/workspace",
     (_url, init) =>
       new Promise((_resolve, reject) => {
         requestSignal = init.signal;
@@ -49,6 +52,7 @@ test("workspace bootstrap aborts a timed out request and reports a distinct time
 
 test("manual cancellation remains distinct from a timeout", async () => {
   const cancelled = createWorkspaceBootstrapRequest(
+    "/api/workspace",
     (_url, init) =>
       new Promise((_resolve, reject) => {
         init.signal.addEventListener("abort", () => reject(new Error("cancelled")));

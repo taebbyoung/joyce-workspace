@@ -171,7 +171,7 @@ test("Work Overview next-step links use a one-time task editor focus intent", as
 
 test("WorkView always receives its completed-task cache props", async () => {
   const app = await source("app/WorkspaceApp.tsx");
-  const workViewStart = app.indexOf("{view === \"work\" && (");
+  const workViewStart = app.indexOf('{data && view === "work" && (');
   const workViewEnd = app.indexOf("{view === \"customers\"", workViewStart);
   const workView = app.slice(workViewStart, workViewEnd);
   const ordersViewStart = app.indexOf("{view === \"orders\" && (");
