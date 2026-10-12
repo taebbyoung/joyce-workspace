@@ -26,7 +26,7 @@ test("task completion waits for the server while other single-task writes stay l
   assert.match(updateSource, /if \(optimisticTask && !isCompletion\)/);
   assert.match(updateSource, /taskCompletionFailureMessage\(previousTask, error\)/);
   assert.doesNotMatch(updateSource, /loadWorkspace/);
-  assert.match(updateSource, /return \{ ok: true, task: result\.task \}/);
+  assert.match(updateSource, /task: result\.task,[\s\S]*nextTask: result\.nextTask/);
 });
 
 test("Home Today reuses confirmed Work completion and keeps task-specific failure feedback", async () => {

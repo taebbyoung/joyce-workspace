@@ -1,8 +1,9 @@
 import { ensureWorkspace, getD1 } from "@/db/runtime";
 import {
-  nextRecurringDate,
+  buildNextRecurringTask,
   taskRecurrenceRules,
 } from "@/lib/task-recurrence";
+import { getSalesBusinessDate } from "@/lib/order-sales-attribution";
 
 export const runtime = "edge";
 
@@ -38,6 +39,47 @@ function taskResponse(
       "server-timing": `db;dur=${databaseDuration.toFixed(1)}, total;dur=${totalDuration.toFixed(1)}`,
     },
   });
+}
+
+function insertRecurringTask(
+  db: D1Database,
+  task: Record<string, unknown>,
+) {
+  return db
+    .prepare(
+      `INSERT OR IGNORE INTO tasks
+        (id, title, status, priority, due_date, next_action_date,
+         reminder_date, recurrence_rule, customer_id, order_id,
+         after_sales_case_id, project_id, next_action, notes, source_type,
+         source_id, work_sort_order, priority_reason, priority_source,
+         priority_ranked_at, legacy_metadata, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .bind(
+      task.id,
+      task.title,
+      task.status,
+      task.priority,
+      task.due_date ?? null,
+      task.next_action_date ?? null,
+      task.reminder_date ?? null,
+      task.recurrence_rule,
+      task.customer_id ?? null,
+      task.order_id ?? null,
+      task.after_sales_case_id ?? null,
+      task.project_id ?? null,
+      task.next_action ?? null,
+      task.notes ?? null,
+      task.source_type ?? null,
+      task.source_id ?? null,
+      task.work_sort_order ?? 0,
+      task.priority_reason ?? null,
+      task.priority_source ?? null,
+      task.priority_ranked_at ?? null,
+      task.legacy_metadata ?? "{}",
+      task.created_at,
+      task.updated_at,
+    );
 }
 
 export async function GET(request: Request) {
@@ -128,7 +170,18 @@ export async function POST(request: Request) {
       const purgeAfter = new Date(
         Date.now() + 30 * 24 * 60 * 60 * 1000,
       ).toISOString();
-      await db.batch([
+      const nextOccurrence = buildNextRecurringTask(
+        existing,
+        getSalesBusinessDate(),
+        now,
+      );
+      const deletedTask = {
+        ...existing,
+        deleted_at: now,
+        purge_after: purgeAfter,
+        updated_at: now,
+      };
+      const statements = [
         db
           .prepare(
             `UPDATE tasks
@@ -146,11 +199,32 @@ export async function POST(request: Request) {
             crypto.randomUUID(),
             id,
             JSON.stringify(existing),
-            JSON.stringify({ deletedAt: now, purgeAfter }),
+            JSON.stringify({
+              deletedAt: now,
+              purgeAfter,
+              recurringContinues: Boolean(nextOccurrence),
+              nextReminderDate: nextOccurrence?.nextDate ?? null,
+            }),
           ),
-      ]);
+      ];
+      if (nextOccurrence) {
+        statements.splice(
+          1,
+          0,
+          insertRecurringTask(db, nextOccurrence.nextTask),
+        );
+      }
+      await db.batch(statements);
       return taskResponse(
-        { ok: true, id, purgeAfter },
+        {
+          ok: true,
+          id,
+          purgeAfter,
+          task: deletedTask,
+          recurringContinues: Boolean(nextOccurrence),
+          nextReminderDate: nextOccurrence?.nextDate ?? null,
+          nextTask: nextOccurrence?.nextTask ?? null,
+        },
         requestStartedAt,
         databaseStartedAt,
       );
@@ -292,52 +366,133 @@ export async function POST(request: Request) {
         return errorResponse("稍后任务必须设置提醒日期。");
       }
 
-      const recurrence = String(existing.recurrence_rule ?? "none");
-      const baseDate = String(
-        existing.reminder_date ??
-          existing.next_action_date ??
-          existing.due_date ??
-          new Date().toISOString().slice(0, 10),
-      );
-      const nextDate =
-        status === "completed" ? nextRecurringDate(baseDate, recurrence) : null;
-      const recurringContinues = Boolean(nextDate);
-      const statusUpdate = recurringContinues
-        ? db
+      if (status === "completed") {
+        if (
+          existing.completed_at ||
+          ["completed", "已完成", "Completed"].includes(String(existing.status))
+        ) {
+          return taskResponse(
+            { ok: true, id, task: existing, recurringContinues: false },
+            requestStartedAt,
+            databaseStartedAt,
+          );
+        }
+        const nextOccurrence = buildNextRecurringTask(
+          existing,
+          getSalesBusinessDate(),
+          now,
+        );
+        const completedTask = {
+          ...existing,
+          status: "completed",
+          snoozed_until: null,
+          completed_at: now,
+          cancelled_at: null,
+          updated_at: now,
+        };
+        const statements = [
+          db
             .prepare(
               `UPDATE tasks SET
-                status = 'pending',
+                status = 'completed',
                 snoozed_until = NULL,
-                reminder_date = ?,
-                completed_at = NULL,
+                completed_at = COALESCE(completed_at, ?),
                 cancelled_at = NULL,
                 updated_at = ?
-               WHERE id = ?`,
+               WHERE id = ?
+                 AND completed_at IS NULL
+                 AND status NOT IN ('completed', '已完成', 'Completed')`,
             )
-            .bind(nextDate, now, id)
-        : db
+            .bind(now, now, id),
+        ];
+        if (nextOccurrence) {
+          statements.push(insertRecurringTask(db, nextOccurrence.nextTask));
+        }
+        statements.push(
+          db
             .prepare(
-              `UPDATE tasks SET
-                status = ?,
-                snoozed_until = ?,
-                reminder_date = CASE WHEN ? = 'snoozed' THEN ? ELSE reminder_date END,
-                completed_at = ?,
-                cancelled_at = ?,
-                updated_at = ?
-               WHERE id = ?`,
+              `INSERT OR IGNORE INTO audit_logs
+                (id, action, entity_type, entity_id, before_data, after_data, source)
+               VALUES (?, 'task_status_updated', 'task', ?, ?, ?, 'user')`,
             )
             .bind(
-              status,
-              reminderDate,
-              status,
-              reminderDate,
-              status === "completed" ? now : null,
-              status === "cancelled" ? now : null,
-              now,
+              `task-completed:${id}`,
               id,
-            );
-      const statements = [
-        statusUpdate,
+              JSON.stringify(existing),
+              JSON.stringify({
+                status,
+                reminderDate: null,
+                recurringContinues: Boolean(nextOccurrence),
+                nextReminderDate: nextOccurrence?.nextDate ?? null,
+              }),
+            ),
+        );
+        if (existing.customer_id) {
+          statements.push(
+            db
+              .prepare(
+                `INSERT OR IGNORE INTO timeline_events
+                  (id, customer_id, event_type, title, content, occurred_at,
+                   source_type, source_id, evidence)
+                 VALUES (?, ?, 'task_completed', ?, ?, ?, 'task', ?, ?)`,
+              )
+              .bind(
+                `task-completed:${id}`,
+                existing.customer_id,
+                `完成任务：${String(existing.title)}`,
+                existing.notes ?? existing.next_action ?? null,
+                now,
+                id,
+                JSON.stringify({ completedAt: now }),
+              ),
+          );
+        }
+        await db.batch(statements);
+        return taskResponse(
+          {
+            ok: true,
+            id,
+            task: completedTask,
+            recurringContinues: Boolean(nextOccurrence),
+            nextReminderDate: nextOccurrence?.nextDate ?? null,
+            nextTask: nextOccurrence?.nextTask ?? null,
+          },
+          requestStartedAt,
+          databaseStartedAt,
+        );
+      }
+
+      const task = {
+        ...existing,
+        status,
+        snoozed_until: reminderDate,
+        reminder_date:
+          status === "snoozed" ? reminderDate : existing.reminder_date,
+        completed_at: null,
+        cancelled_at: status === "cancelled" ? now : null,
+        updated_at: now,
+      };
+      await db.batch([
+        db
+          .prepare(
+            `UPDATE tasks SET
+              status = ?,
+              snoozed_until = ?,
+              reminder_date = CASE WHEN ? = 'snoozed' THEN ? ELSE reminder_date END,
+              completed_at = NULL,
+              cancelled_at = ?,
+              updated_at = ?
+             WHERE id = ?`,
+          )
+          .bind(
+            status,
+            reminderDate,
+            status,
+            reminderDate,
+            status === "cancelled" ? now : null,
+            now,
+            id,
+          ),
         db
           .prepare(
             `INSERT INTO audit_logs
@@ -348,66 +503,16 @@ export async function POST(request: Request) {
             crypto.randomUUID(),
             id,
             JSON.stringify(existing),
-            JSON.stringify({
-              status,
-              reminderDate,
-              recurringContinues,
-              nextReminderDate: nextDate,
-            }),
+            JSON.stringify({ status, reminderDate }),
           ),
-      ];
-
-      if (status === "completed") {
-        if (existing.customer_id) {
-          statements.push(
-            db
-              .prepare(
-                `INSERT INTO timeline_events
-                  (id, customer_id, event_type, title, content, occurred_at,
-                   source_type, source_id, evidence)
-                 VALUES (?, ?, 'task_completed', ?, ?, ?, 'task', ?, ?)`,
-              )
-              .bind(
-                crypto.randomUUID(),
-                existing.customer_id,
-                `完成任务：${String(existing.title)}`,
-                existing.notes ?? existing.next_action ?? null,
-                now,
-                id,
-                JSON.stringify({ completedAt: now }),
-              ),
-          );
-        }
-      }
-
-      await db.batch(statements);
-      const task = recurringContinues
-        ? {
-            ...existing,
-            status: "pending",
-            snoozed_until: null,
-            reminder_date: nextDate,
-            completed_at: null,
-            cancelled_at: null,
-            updated_at: now,
-          }
-        : {
-            ...existing,
-            status,
-            snoozed_until: reminderDate,
-            reminder_date:
-              status === "snoozed" ? reminderDate : existing.reminder_date,
-            completed_at: status === "completed" ? now : null,
-            cancelled_at: status === "cancelled" ? now : null,
-            updated_at: now,
-          };
+      ]);
       return taskResponse(
         {
           ok: true,
           id,
           task,
-          recurringContinues,
-          nextReminderDate: nextDate,
+          recurringContinues: false,
+          nextReminderDate: null,
         },
         requestStartedAt,
         databaseStartedAt,

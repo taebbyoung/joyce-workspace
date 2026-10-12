@@ -422,7 +422,8 @@ test("Work completed history uses the server completion timestamp", async () => 
   const statusSource = tasksRoute.slice(statusStart);
 
   assert.match(tasksRoute, /const now = new Date\(\)\.toISOString\(\)/);
-  assert.match(statusSource, /status === "completed" \? now : null/);
+  assert.match(statusSource, /completed_at: now/);
+  assert.match(statusSource, /completed_at = COALESCE\(completed_at, \?\)/);
   assert.match(workSource, /sortTasksByCompletedAt\(completedTasks\)/);
   assert.doesNotMatch(workSource, /sortTasksByCompletedAt\(todayTasks|sortTasksByCompletedAt\(upcomingTasks/);
 });

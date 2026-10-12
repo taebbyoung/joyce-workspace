@@ -132,7 +132,7 @@ function emptyCustomerContactDraft(): CustomerContactDraft {
 }
 
 type TaskActionResult =
-  | { ok: true; task?: Row }
+  | { ok: true; task?: Row; nextTask?: Row }
   | { ok: false; error: string };
 
 type ProjectActionResult =
@@ -957,7 +957,15 @@ export function WorkspaceApp() {
           ...(action === "restore" ? { archived_at: null } : {}),
           ...(action === "restore_trash" ? { deleted_at: null, purge_after: null } : {}),
         };
-      return updateTaskCollections(current, id, changed);
+      const updated = updateTaskCollections(current, id, changed);
+      if (!result.nextTask) return updated;
+      const nextId = String(result.nextTask.id);
+      const withNextTask = updated.tasks.some(
+        (task) => String(task.id) === nextId,
+      )
+        ? updated
+        : { ...updated, tasks: [...updated.tasks, result.nextTask] };
+      return updateTaskCollections(withNextTask, nextId, result.nextTask);
     });
     if (result.task) {
       setHomeState((current) =>
@@ -970,7 +978,11 @@ export function WorkspaceApp() {
       );
       void loadHome();
     }
-    return { ok: true, task: result.task };
+    return {
+      ok: true,
+      task: result.task,
+      nextTask: result.nextTask,
+    };
   }
 
   async function completeHomeTodayTask(id: string): Promise<TaskActionResult> {
