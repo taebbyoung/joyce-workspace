@@ -5,6 +5,7 @@ import {
   hasStoredOrderChanges,
 } from "@/lib/order-change";
 import { refreshOrderRisks } from "@/lib/order-risk";
+import { attachShipmentSummaries } from "@/lib/order-shipments";
 import { requiresOrderSalesImpactConfirmation } from "@/lib/order-sales-impact";
 
 export const runtime = "edge";
@@ -264,17 +265,21 @@ export async function GET() {
         LIMIT 300`).all<Record<string, unknown>>(),
       db.prepare("SELECT * FROM order_items ORDER BY order_id, rowid").all<Record<string, unknown>>(),
       db.prepare("SELECT * FROM order_payments ORDER BY order_id, payment_type, payment_date, sort_order, created_at").all<Record<string, unknown>>(),
+      db.prepare("SELECT * FROM order_shipments ORDER BY order_id, sort_order, batch_no").all<Record<string, unknown>>(),
+      db.prepare("SELECT * FROM order_shipment_items ORDER BY order_id, shipment_id, created_at").all<Record<string, unknown>>(),
       db.prepare("SELECT * FROM order_risks WHERE status = 'active' AND trigger_type <> 'shipment_delay' ORDER BY detected_at DESC LIMIT 500").all<Record<string, unknown>>(),
       db.prepare("SELECT * FROM order_status_history ORDER BY created_at DESC LIMIT 500").all<Record<string, unknown>>(),
       db.prepare("SELECT * FROM accessory_sales_totals ORDER BY sales_year DESC").all<Record<string, unknown>>(),
     ]);
     return Response.json({
-      orders: results[0].results,
+      orders: attachShipmentSummaries(results[0].results, results[1].results, results[3].results, results[4].results),
       orderItems: results[1].results,
       orderPayments: results[2].results,
-      orderRisks: results[3].results,
-      orderStatusHistory: results[4].results,
-      accessorySales: results[5].results,
+      orderShipments: results[3].results,
+      orderShipmentItems: results[4].results,
+      orderRisks: results[5].results,
+      orderStatusHistory: results[6].results,
+      accessorySales: results[7].results,
     });
   } catch (error) {
     return errorResponse(error instanceof Error ? error.message : "订单数据加载失败。", 500);
@@ -564,14 +569,14 @@ export async function POST(request: Request) {
       productionStatuses,
       "not_scheduled",
     );
-    const shipmentStatus = normalizeStatus(
-      payload.shipmentStatus,
-      shipmentStatuses,
-      "not_arranged",
-    );
-    const shippingMethod = shippingMethods.has(text(payload.shippingMethod, 40))
-      ? text(payload.shippingMethod, 40)
-      : null;
+    const shipmentStatus = payload.shipmentStatus === undefined && existing
+      ? String(existing.shipment_status || "not_arranged")
+      : normalizeStatus(payload.shipmentStatus, shipmentStatuses, "not_arranged");
+    const shippingMethod = payload.shippingMethod === undefined && existing
+      ? existing.shipping_method ?? null
+      : shippingMethods.has(text(payload.shippingMethod, 40))
+        ? text(payload.shippingMethod, 40)
+        : null;
     const retained = (key: string, max = 300) =>
       payload[key] === undefined ? (existing?.[key.replace(/[A-Z]/g, (match) => `_${match.toLowerCase()}`)] ?? null) : nullable(payload[key], max);
     const items = orderItems(payload.items);
@@ -591,6 +596,22 @@ export async function POST(request: Request) {
     const itemsChanged = Boolean(
       items && (!existing || hasOrderItemChanges(existingItems.results, items)),
     );
+    if (existing && items && itemsChanged) {
+      const allocations = await db.prepare(
+        `SELECT order_item_id, COALESCE(SUM(quantity), 0) AS allocated
+         FROM order_shipment_items WHERE order_id = ? GROUP BY order_item_id`,
+      ).bind(id).all<{ order_item_id: string; allocated: number }>();
+      const nextById = new Map(items.map((item) => [item.id, item]));
+      for (const allocation of allocations.results) {
+        const nextItem = nextById.get(String(allocation.order_item_id));
+        if (!nextItem) {
+          return errorResponse("该车型已有发货批次分配，不能删除；请先调整相关发货批次。", 409);
+        }
+        if (Number(nextItem.quantity ?? 0) < Number(allocation.allocated || 0)) {
+          return errorResponse(`车型“${nextItem.description}”数量不能低于已分配的 ${Number(allocation.allocated || 0)}。`, 409);
+        }
+      }
+    }
     const paymentsChanged = Boolean(
       payments && (!existing || hasOrderPaymentChanges(existingPayments.results, payments)),
     );
@@ -752,14 +773,21 @@ export async function POST(request: Request) {
     }
 
     if (items && itemsChanged) {
+      const nextIds = new Set(items.map((item) => item.id));
       const itemStatements = [
-        db.prepare("DELETE FROM order_items WHERE order_id = ?").bind(id),
+        ...existingItems.results
+          .filter((item) => !nextIds.has(String(item.id)))
+          .map((item) => db.prepare("DELETE FROM order_items WHERE id = ? AND order_id = ?").bind(item.id, id)),
         ...items.map((item) =>
           db
             .prepare(
               `INSERT INTO order_items
                 (id, order_id, description, quantity, unit_price, legacy_metadata)
-               VALUES (?, ?, ?, ?, ?, '{}')`,
+               VALUES (?, ?, ?, ?, ?, '{}')
+               ON CONFLICT(id) DO UPDATE SET
+                 description = excluded.description,
+                 quantity = excluded.quantity,
+                 unit_price = excluded.unit_price`,
             )
             .bind(item.id, id, item.description, item.quantity, item.unitPrice),
         ),
@@ -857,24 +885,32 @@ export async function POST(request: Request) {
         JSON.stringify(payload),
       )
       .run();
-    const [order, savedItems, savedPayments, orderRisks] = await Promise.all([
+    const [order, savedItems, savedPayments, savedShipments, savedShipmentItems, orderRisks] = await Promise.all([
       db.prepare("SELECT * FROM orders WHERE id = ?").bind(id).first<Record<string, unknown>>(),
       db.prepare("SELECT * FROM order_items WHERE order_id = ? ORDER BY rowid").bind(id).all<Record<string, unknown>>(),
       db.prepare("SELECT * FROM order_payments WHERE order_id = ? ORDER BY payment_type, payment_date, sort_order, created_at").bind(id).all<Record<string, unknown>>(),
+      db.prepare("SELECT * FROM order_shipments WHERE order_id = ? ORDER BY sort_order, batch_no").bind(id).all<Record<string, unknown>>(),
+      db.prepare("SELECT * FROM order_shipment_items WHERE order_id = ? ORDER BY shipment_id, created_at").bind(id).all<Record<string, unknown>>(),
       db.prepare("SELECT * FROM order_risks WHERE order_id = ? AND status = 'active'").bind(id).all<Record<string, unknown>>(),
     ]);
     return Response.json({
       ok: true,
       id,
       customerId: linkedCustomer.id,
-      order,
+      order: order ? attachShipmentSummaries([order], savedItems.results, savedShipments.results, savedShipmentItems.results)[0] : null,
       orderItems: savedItems.results,
       orderPayments: savedPayments.results,
+      orderShipments: savedShipments.results,
+      orderShipmentItems: savedShipmentItems.results,
       orderRisks: orderRisks.results,
     });
   } catch (error) {
+    const message = error instanceof Error ? error.message : "订单保存失败。";
+    if (message.includes("order_item_quantity_below_allocated") || message.includes("order_item_has_shipment_allocations")) {
+      return errorResponse("订单车型已有发货批次分配，不能删除或降低到已分配数量以下。", 409);
+    }
     return errorResponse(
-      error instanceof Error ? error.message : "订单保存失败。",
+      message,
       500,
     );
   }

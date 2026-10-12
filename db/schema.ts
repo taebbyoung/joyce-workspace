@@ -208,6 +208,44 @@ export const orderItems = sqliteTable("order_items", {
   legacyMetadata: text("legacy_metadata").notNull().default("{}"),
 });
 
+export const orderShipments = sqliteTable("order_shipments", {
+  id: text("id").primaryKey(),
+  orderId: text("order_id").notNull(),
+  batchNo: integer("batch_no").notNull(),
+  batchName: text("batch_name"),
+  shippingMethod: text("shipping_method"),
+  shipmentStatus: text("shipment_status").notNull().default("not_arranged"),
+  expectedShippingDate: text("expected_shipping_date"),
+  actualShippingDate: text("actual_shipping_date"),
+  estimatedDeliveryDate: text("estimated_delivery_date"),
+  containerNumber: text("container_number"),
+  blNumber: text("bl_number"),
+  awbNumber: text("awb_number"),
+  carrierCompany: text("carrier_company"),
+  trackingNumber: text("tracking_number"),
+  logisticsCompany: text("logistics_company"),
+  logisticsNumber: text("logistics_number"),
+  shippingCompany: text("shipping_company"),
+  forwarder: text("forwarder"),
+  vessel: text("vessel"),
+  voyage: text("voyage"),
+  portOfLoading: text("port_of_loading"),
+  portOfDischarge: text("port_of_discharge"),
+  eta: text("eta"),
+  notes: text("notes"),
+  sortOrder: integer("sort_order").notNull().default(0),
+  ...timestamps,
+});
+
+export const orderShipmentItems = sqliteTable("order_shipment_items", {
+  id: text("id").primaryKey(),
+  shipmentId: text("shipment_id").notNull(),
+  orderId: text("order_id").notNull(),
+  orderItemId: text("order_item_id").notNull(),
+  quantity: real("quantity").notNull(),
+  ...timestamps,
+});
+
 export const orderPayments = sqliteTable("order_payments", {
   id: text("id").primaryKey(),
   orderId: text("order_id").notNull(),

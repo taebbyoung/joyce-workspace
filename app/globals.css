@@ -2343,6 +2343,86 @@ kbd {
   gap: 8px;
 }
 
+.shipment-batches,
+.shipment-editor {
+  display: grid;
+  gap: 12px;
+}
+
+.shipment-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--soft);
+  font-size: 13px;
+}
+
+.shipment-batch-card {
+  display: grid;
+  gap: 7px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.shipment-batch-card p,
+.shipment-batch-card small {
+  margin: 0;
+}
+
+.shipment-batch-heading,
+.shipment-batch-heading > div,
+.shipment-batch-items {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.shipment-batch-heading {
+  justify-content: space-between;
+}
+
+.shipment-batch-heading > div:first-child {
+  align-items: flex-start;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.shipment-batch-items {
+  flex-wrap: wrap;
+  font-size: 13px;
+}
+
+.shipment-item-allocation {
+  display: grid;
+  gap: 8px;
+}
+
+.shipment-item-allocation > label {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 120px;
+  align-items: center;
+  gap: 12px;
+}
+
+.shipment-item-allocation > label span,
+.shipment-item-allocation > label small {
+  display: block;
+}
+
+@media (max-width: 720px) {
+  .shipment-batch-heading {
+    align-items: flex-start;
+  }
+
+  .shipment-item-allocation > label {
+    grid-template-columns: minmax(0, 1fr) 90px;
+  }
+}
+
 .order-risk {
   display: grid;
   grid-template-columns: 58px 1fr;

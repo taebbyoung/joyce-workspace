@@ -48,6 +48,10 @@ function shippingStatus(order: OrderSalesAttributionRow) {
 }
 
 function shippingDate(order: OrderSalesAttributionRow) {
+  const shipmentDate = normalizeDate(
+    field(order, "shipmentActualShippingDate", "shipment_actual_shipping_date"),
+  );
+  if (shipmentDate) return shipmentDate;
   return normalizeDate(
     field(order, "expectedShippingDate", "expected_shipping_date"),
   );
@@ -71,6 +75,9 @@ export function isActualShippingDate(
   today?: string,
 ) {
   const date = shippingDate(order);
+  if (
+    normalizeDate(field(order, "shipmentActualShippingDate", "shipment_actual_shipping_date"))
+  ) return Boolean(date && date <= normalizedToday(today));
   return Boolean(
     date &&
       date <= normalizedToday(today) &&

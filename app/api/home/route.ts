@@ -59,6 +59,7 @@ export async function GET() {
         .first<Row>(),
       all<Row>(
         `SELECT customer_code, expected_shipping_date, shipment_status,
+                (SELECT MAX(s.actual_shipping_date) FROM order_shipments s WHERE s.order_id = orders.id) AS shipment_actual_shipping_date,
                 balance_received_date, cny_amount, currency_status, deleted_at
          FROM orders
          WHERE currency_status = 'confirmed' AND deleted_at IS NULL`,

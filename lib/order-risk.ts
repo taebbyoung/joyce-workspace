@@ -1,4 +1,5 @@
 import { getShippingDateState } from "@/lib/order-sales-attribution";
+import { shipmentLabel } from "@/lib/order-shipments";
 
 type RiskSeed = {
   level: "High" | "Medium" | "Low";
@@ -23,6 +24,11 @@ export async function refreshOrderRisks(db: D1Database, orderId: string) {
     .bind(orderId)
     .first<Record<string, unknown>>();
   if (!order) return;
+  const shipmentResult = await db
+    .prepare("SELECT * FROM order_shipments WHERE order_id = ? ORDER BY sort_order, batch_no")
+    .bind(orderId)
+    .all<Record<string, unknown>>();
+  const batchShipments = shipmentResult.results;
   if (String(order.order_status || "active") === "completed") {
     await db.prepare(
       "UPDATE order_risks SET status = 'resolved', updated_at = ? WHERE order_id = ? AND status = 'active'",
@@ -51,7 +57,7 @@ export async function refreshOrderRisks(db: D1Database, orderId: string) {
     });
   }
 
-  if (
+  if (!batchShipments.length &&
     ["unpaid", "balance_pending", "partial_payment"].includes(payment) &&
     shippingDateState.kind !== "actual" &&
     expectedShippingDays !== null &&
@@ -67,7 +73,7 @@ export async function refreshOrderRisks(db: D1Database, orderId: string) {
     });
   }
 
-  if (
+  if (!batchShipments.length &&
     deliveryDays !== null &&
     deliveryDays < 0 &&
     shipment !== "delivered"
@@ -82,7 +88,7 @@ export async function refreshOrderRisks(db: D1Database, orderId: string) {
     });
   }
 
-  if (
+  if (!batchShipments.length &&
     shippingDateState.kind === "overdue" &&
     !["production_completed", "inspection", "ready_to_ship", "cancelled"].includes(production)
   ) {
@@ -96,7 +102,7 @@ export async function refreshOrderRisks(db: D1Database, orderId: string) {
     });
   }
 
-  if (
+  if (!batchShipments.length &&
     shippingDateState.kind === "overdue"
   ) {
     risks.push({
@@ -110,7 +116,7 @@ export async function refreshOrderRisks(db: D1Database, orderId: string) {
   }
 
   const shipped = ["in_transit", "arrived", "delivered"].includes(shipment);
-  if (shippingMethod === "sea_freight" && shipped && !String(order.bl_number || "").trim()) {
+  if (!batchShipments.length && shippingMethod === "sea_freight" && shipped && !String(order.bl_number || "").trim()) {
     risks.push({
       level: shipment === "delivered" ? "Medium" : "High",
       title: "运输订单缺少BL号",
@@ -121,7 +127,7 @@ export async function refreshOrderRisks(db: D1Database, orderId: string) {
     });
   }
 
-  if (shippingMethod === "express" && shipped && !String(order.tracking_number || "").trim()) {
+  if (!batchShipments.length && shippingMethod === "express" && shipped && !String(order.tracking_number || "").trim()) {
     risks.push({
       level: "High",
       title: "运输中快递订单缺少追踪号",
@@ -132,7 +138,7 @@ export async function refreshOrderRisks(db: D1Database, orderId: string) {
     });
   }
 
-  if (shippingMethod === "domestic" && shipped && !String(order.logistics_number || "").trim()) {
+  if (!batchShipments.length && shippingMethod === "domestic" && shipped && !String(order.logistics_number || "").trim()) {
     risks.push({
       level: "High",
       title: "运输中订单缺少物流单号",
@@ -143,7 +149,7 @@ export async function refreshOrderRisks(db: D1Database, orderId: string) {
     });
   }
 
-  if (shippingMethod === "air_freight" && shipped && !String(order.awb_number || "").trim()) {
+  if (!batchShipments.length && shippingMethod === "air_freight" && shipped && !String(order.awb_number || "").trim()) {
     risks.push({
       level: "High",
       title: "运输中空运订单缺少AWB",
@@ -152,6 +158,66 @@ export async function refreshOrderRisks(db: D1Database, orderId: string) {
       evidence: `orders.shipping_method=air_freight; orders.shipment_status=${shipment}; orders.awb_number=empty`,
       trigger: "missing_awb",
     });
+  }
+
+  for (const batch of batchShipments) {
+    const label = shipmentLabel(batch);
+    const batchStatus = String(batch.shipment_status || "not_arranged");
+    const method = String(batch.shipping_method || "");
+    const expectedDays = dateDistance(batch.expected_shipping_date);
+    const deliveredDays = dateDistance(batch.estimated_delivery_date ?? batch.eta);
+    const actuallyShipped = Boolean(String(batch.actual_shipping_date || "").slice(0, 10));
+    if (!actuallyShipped && expectedDays !== null && expectedDays <= 10 && ["unpaid", "balance_pending", "partial_payment"].includes(payment)) {
+      risks.push({
+        level: expectedDays <= 3 ? "High" : "Medium", title: `${label}预计发货前仍有款项待收`,
+        reason: `${label}预计发货日期为 ${String(batch.expected_shipping_date).slice(0, 10)}，付款状态为 ${payment}。`,
+        action: "核对该批次发货条件和货款收清安排。",
+        evidence: `order_shipments.id=${batch.id}; expected_shipping_date=${batch.expected_shipping_date}; orders.payment_status=${payment}`,
+        trigger: `shipment_${batch.id}_payment_before_shipping`,
+      });
+    }
+    if (!actuallyShipped && expectedDays !== null && expectedDays < 0 && !["production_completed", "inspection", "ready_to_ship", "cancelled"].includes(production)) {
+      risks.push({
+        level: "High", title: `${label}预计发货已逾期但生产未完成`,
+        reason: `${label}预计发货日期已过，生产状态仍为 ${production || "未设置"}。`,
+        action: "确认生产、验货及该批次装运安排。",
+        evidence: `order_shipments.id=${batch.id}; expected_shipping_date=${batch.expected_shipping_date}; orders.production_status=${production}`,
+        trigger: `shipment_${batch.id}_production_delay`,
+      });
+    }
+    if (!actuallyShipped && expectedDays !== null && expectedDays < 0) {
+      risks.push({
+        level: "High", title: `${label}预计发货日期已逾期${Math.abs(expectedDays)}天`,
+        reason: `${label}预计发货日期为 ${String(batch.expected_shipping_date).slice(0, 10)}，尚未记录实际发货日期。`,
+        action: "确认该批次实际发货安排并更新批次日期。",
+        evidence: `order_shipments.id=${batch.id}; expected_shipping_date=${batch.expected_shipping_date}; actual_shipping_date=空`,
+        trigger: `shipment_${batch.id}_shipping_overdue`,
+      });
+    }
+    if (actuallyShipped && deliveredDays !== null && deliveredDays < 0 && batchStatus !== "delivered") {
+      risks.push({
+        level: "High", title: `${label}已超过预计客户收货日期`,
+        reason: `${label}预计到达日期 ${String(batch.estimated_delivery_date ?? batch.eta).slice(0, 10)} 已过，状态仍为 ${batchStatus}。`,
+        action: "向承运方或客户核实该批次到货状态。",
+        evidence: `order_shipments.id=${batch.id}; estimated_delivery_date=${batch.estimated_delivery_date ?? batch.eta}; shipment_status=${batchStatus}`,
+        trigger: `shipment_${batch.id}_delivery_overdue`,
+      });
+    }
+    if (actuallyShipped && method === "sea_freight" && !String(batch.bl_number || "").trim()) {
+      risks.push({ level: "High", title: `${label}缺少BL号`, reason: `${label}已发货但未记录 BL No.。`, action: "核对并补充该批次 BL No.。", evidence: `order_shipments.id=${batch.id}; bl_number=空`, trigger: `shipment_${batch.id}_missing_bl` });
+    }
+    if (actuallyShipped && method === "air_freight" && !String(batch.awb_number || "").trim()) {
+      risks.push({ level: "High", title: `${label}缺少AWB`, reason: `${label}已发货但未记录 AWB。`, action: "核对并补充该批次 AWB。", evidence: `order_shipments.id=${batch.id}; awb_number=空`, trigger: `shipment_${batch.id}_missing_awb` });
+    }
+    if (actuallyShipped && method === "express" && !String(batch.tracking_number || "").trim()) {
+      risks.push({ level: "High", title: `${label}缺少追踪号`, reason: `${label}已发货但未记录 Tracking No.。`, action: "核对并补充该批次追踪号。", evidence: `order_shipments.id=${batch.id}; tracking_number=空`, trigger: `shipment_${batch.id}_missing_tracking` });
+    }
+    if (actuallyShipped && method === "domestic" && !String(batch.logistics_number || "").trim()) {
+      risks.push({ level: "High", title: `${label}缺少物流单号`, reason: `${label}已发货但未记录物流单号。`, action: "核对并补充该批次物流单号。", evidence: `order_shipments.id=${batch.id}; logistics_number=空`, trigger: `shipment_${batch.id}_missing_logistics` });
+    }
+    if (batchStatus === "abnormal") {
+      risks.push({ level: "High", title: `${label}运输状态异常`, reason: `${label}被标记为异常。`, action: "确认异常原因、责任人和处理日期。", evidence: `order_shipments.id=${batch.id}; shipment_status=abnormal`, trigger: `shipment_${batch.id}_status_exception` });
+    }
   }
 
   if (shipment === "abnormal" || payment === "abnormal") {

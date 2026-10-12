@@ -42,6 +42,7 @@ import {
 } from "@/lib/order-workflow";
 import { requiresOrderSalesImpactConfirmation } from "@/lib/order-sales-impact";
 import { normalizeOrderPayments } from "@/lib/order-payments";
+import { hasLegacyShipmentData, shipmentLabel, summarizeOrderShipments } from "@/lib/order-shipments";
 import {
   buildAttributedCustomerContribution,
   buildAttributedSalesTrend,
@@ -282,6 +283,8 @@ type WorkspaceData = HomeBootstrapData & {
   orders: Row[];
   orderItems: Row[];
   orderPayments: Row[];
+  orderShipments: Row[];
+  orderShipmentItems: Row[];
   orderRisks: Row[];
   orderStatusHistory: Row[];
   accessorySales: Row[];
@@ -1097,7 +1100,7 @@ export function WorkspaceApp() {
       if (!current) return current;
       const exists = current.orders.some((order) => order.id === result.order.id);
       const orders = exists
-        ? current.orders.map((order) => order.id === result.order.id ? result.order : order)
+        ? current.orders.map((order) => order.id === result.order.id ? { ...order, ...result.order } : order)
         : [result.order, ...current.orders];
       const today = getSalesBusinessDate();
       const year = today.slice(0, 4);
@@ -1133,6 +1136,12 @@ export function WorkspaceApp() {
               ...result.orderPayments,
             ]
           : current.orderPayments,
+        orderShipments: result.orderShipments
+          ? [...current.orderShipments.filter((shipment) => shipment.order_id !== result.order.id), ...result.orderShipments]
+          : current.orderShipments,
+        orderShipmentItems: result.orderShipmentItems
+          ? [...current.orderShipmentItems.filter((item) => item.order_id !== result.order.id), ...result.orderShipmentItems]
+          : current.orderShipmentItems,
         orderRisks: [
           ...current.orderRisks.filter((risk) => risk.order_id !== result.order.id),
           ...(result.orderRisks || []),
@@ -1220,6 +1229,8 @@ export function WorkspaceApp() {
         },
         orderItems: current.orderItems.filter((item) => item.order_id !== id),
         orderPayments: current.orderPayments.filter((payment) => payment.order_id !== id),
+        orderShipments: current.orderShipments.filter((shipment) => shipment.order_id !== id),
+        orderShipmentItems: current.orderShipmentItems.filter((item) => item.order_id !== id),
         orderRisks: current.orderRisks.filter((risk) => risk.order_id !== id),
         attention: current.attention.filter((item) => item.order_id !== id),
       };
@@ -1362,6 +1373,8 @@ export function WorkspaceApp() {
         },
         orderItems: snapshot.orderItems || current.orderItems,
         orderPayments: snapshot.orderPayments || current.orderPayments,
+        orderShipments: snapshot.orderShipments || current.orderShipments,
+        orderShipmentItems: snapshot.orderShipmentItems || current.orderShipmentItems,
         orderRisks: snapshot.orderRisks || current.orderRisks,
         orderStatusHistory: snapshot.orderStatusHistory || current.orderStatusHistory,
         accessorySales: snapshot.accessorySales || current.accessorySales,
@@ -6602,6 +6615,8 @@ function OrdersView({
   const [shippingMethod, setShippingMethod] = useState("");
   const [editorShipmentStatus, setEditorShipmentStatus] = useState("not_arranged");
   const [editorShippingDate, setEditorShippingDate] = useState("");
+  const [shipmentDraft, setShipmentDraft] = useState<Row | null>(null);
+  const [shipmentBusy, setShipmentBusy] = useState(false);
   const [requiresSalesImpactConfirmation, setRequiresSalesImpactConfirmation] =
     useState(true);
   const [completedOrderMenuId, setCompletedOrderMenuId] = useState("");
@@ -6639,6 +6654,30 @@ function OrdersView({
     }
     return grouped;
   }, [data.orderPayments]);
+
+  const orderShipmentsByOrderId = useMemo(() => {
+    const grouped = new Map<string, Row[]>();
+    for (const shipment of data.orderShipments) {
+      const orderId = String(shipment.order_id || "");
+      if (!orderId) continue;
+      const rows = grouped.get(orderId);
+      if (rows) rows.push(shipment);
+      else grouped.set(orderId, [shipment]);
+    }
+    return grouped;
+  }, [data.orderShipments]);
+
+  const shipmentItemsByShipmentId = useMemo(() => {
+    const grouped = new Map<string, Row[]>();
+    for (const item of data.orderShipmentItems) {
+      const shipmentId = String(item.shipment_id || "");
+      if (!shipmentId) continue;
+      const rows = grouped.get(shipmentId);
+      if (rows) rows.push(item);
+      else grouped.set(shipmentId, [item]);
+    }
+    return grouped;
+  }, [data.orderShipmentItems]);
 
   const searchedOrders = data.orders.filter((order) => {
     const haystack = JSON.stringify(order).toLowerCase();
@@ -6838,8 +6877,102 @@ function OrdersView({
     setShippingMethod(String(order?.shipping_method || ""));
     setEditorShipmentStatus(editableShipmentStatus(order?.shipment_status));
     setEditorShippingDate(String(order?.expected_shipping_date || "").slice(0, 10));
+    setShipmentDraft(null);
     setRequiresSalesImpactConfirmation(!order);
     setOrderEditorOpen(true);
+  }
+
+  function startShipment(shipment?: Row, copyLegacy = false) {
+    if (!selectedOrder) return;
+    const orderId = String(selectedOrder.id);
+    const savedShipments = orderShipmentsByOrderId.get(orderId) || [];
+    const sourceItems = shipment ? shipmentItemsByShipmentId.get(String(shipment.id)) || [] : [];
+    const itemDrafts = (orderItemsByOrderId.get(orderId) || []).map((item) => ({
+      orderItemId: item.id,
+      quantity: sourceItems.find((entry) => entry.order_item_id === item.id)?.quantity ?? "",
+    }));
+    setShipmentDraft({
+      shipmentId: shipment?.id || "",
+      batchName: shipment?.batch_name || "",
+      batchNo: shipment?.batch_no || savedShipments.length + 1,
+      shippingMethod: shipment?.shipping_method || (copyLegacy ? selectedOrder.shipping_method : "") || "",
+      shipmentStatus: shipment?.shipment_status || (copyLegacy ? editableShipmentStatus(selectedOrder.shipment_status) : "not_arranged"),
+      expectedShippingDate: String(shipment?.expected_shipping_date || (copyLegacy ? selectedOrder.expected_shipping_date : "") || "").slice(0, 10),
+      actualShippingDate: String(shipment?.actual_shipping_date || "").slice(0, 10),
+      estimatedDeliveryDate: String(shipment?.estimated_delivery_date || (copyLegacy ? selectedOrder.estimated_delivery_date : "") || "").slice(0, 10),
+      shippingCompany: shipment?.shipping_company || (copyLegacy ? selectedOrder.shipping_company : "") || "",
+      forwarder: shipment?.forwarder || (copyLegacy ? selectedOrder.forwarder : "") || "",
+      containerNumber: shipment?.container_number || (copyLegacy ? selectedOrder.container_number : "") || "",
+      portOfLoading: shipment?.port_of_loading || (copyLegacy ? selectedOrder.port_of_loading : "") || "",
+      portOfDischarge: shipment?.port_of_discharge || (copyLegacy ? selectedOrder.port_of_discharge : "") || "",
+      vessel: shipment?.vessel || (copyLegacy ? selectedOrder.vessel : "") || "",
+      voyage: shipment?.voyage || (copyLegacy ? selectedOrder.voyage : "") || "",
+      blNumber: shipment?.bl_number || (copyLegacy ? selectedOrder.bl_number : "") || "",
+      awbNumber: shipment?.awb_number || (copyLegacy ? selectedOrder.awb_number : "") || "",
+      carrierCompany: shipment?.carrier_company || (copyLegacy ? selectedOrder.carrier_company : "") || "",
+      trackingNumber: shipment?.tracking_number || (copyLegacy ? selectedOrder.tracking_number : "") || "",
+      logisticsCompany: shipment?.logistics_company || (copyLegacy ? selectedOrder.logistics_company : "") || "",
+      logisticsNumber: shipment?.logistics_number || (copyLegacy ? selectedOrder.logistics_number : "") || "",
+      eta: String(shipment?.eta || "").slice(0, 10),
+      notes: shipment?.notes || "",
+      copyLegacy,
+      openNext: copyLegacy,
+      items: itemDrafts,
+    });
+  }
+
+  function updateShipmentDraft(key: string, value: unknown) {
+    setShipmentDraft((current) => current ? { ...current, [key]: value } : current);
+  }
+
+  async function saveShipment() {
+    if (!selectedOrder || !shipmentDraft) return;
+    setShipmentBusy(true);
+    setMessage("");
+    const response = await fetch("/api/orders/shipments", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action: "save_shipment", orderId: selectedOrder.id, ...shipmentDraft }),
+    });
+    const result = await response.json();
+    if (!response.ok) setMessage(result.error || "发货批次保存失败。");
+    else {
+      const openNext = Boolean(shipmentDraft.openNext);
+      onOrderSaved(result);
+      setSelectedOrder(result.order);
+      setShipmentDraft(openNext ? {
+        shipmentId: "",
+        batchName: "",
+        batchNo: Number(result.order?.shipment_count || 1) + 1,
+        shippingMethod: "",
+        shipmentStatus: "not_arranged",
+        expectedShippingDate: "",
+        actualShippingDate: "",
+        estimatedDeliveryDate: "",
+        eta: "",
+        notes: "",
+        copyLegacy: false,
+        openNext: false,
+        items: (result.orderItems || []).map((item: Row) => ({ orderItemId: item.id, quantity: "" })),
+      } : null);
+    }
+    setShipmentBusy(false);
+  }
+
+  async function deleteShipment(shipment: Row) {
+    if (!selectedOrder) return;
+    const warning = shipment.actual_shipping_date
+      ? "该批次已经实际发货。删除后会重算已发数量、销售归属和风险提醒，确认删除吗？"
+      : "确认删除该发货批次吗？";
+    if (!window.confirm(warning)) return;
+    setShipmentBusy(true);
+    const response = await fetch("/api/orders/shipments", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action: "delete_shipment", orderId: selectedOrder.id, shipmentId: shipment.id }),
+    });
+    const result = await response.json();
+    if (!response.ok) setMessage(result.error || "发货批次删除失败。");
+    else { onOrderSaved(result); setSelectedOrder(result.order); setShipmentDraft(null); }
+    setShipmentBusy(false);
   }
 
   useEffect(() => {
@@ -7205,6 +7338,14 @@ function OrdersView({
   const selectedHistory = selectedOrder
     ? data.orderStatusHistory.filter((entry) => entry.order_id === selectedOrder.id)
     : [];
+  const selectedShipments = selectedOrder
+    ? orderShipmentsByOrderId.get(String(selectedOrder.id)) || []
+    : [];
+  const selectedOrderItems = selectedOrder
+    ? orderItemsByOrderId.get(String(selectedOrder.id)) || []
+    : [];
+  const selectedShipmentItems = selectedShipments.flatMap((shipment) => shipmentItemsByShipmentId.get(String(shipment.id)) || []);
+  const selectedShipmentSummary = summarizeOrderShipments(selectedOrderItems, selectedShipments, selectedShipmentItems);
   const paymentRecordsByType = (type: "deposit" | "balance") =>
     editorPayments.filter((payment) => payment.paymentType === type);
 
@@ -7330,7 +7471,7 @@ function OrdersView({
                   <div className="order-status-columns">
                     <span><small className="order-label">付款</small><strong className="order-primary-text">{orderStatusLabel(item.payment_status, paymentStatusOptions)}</strong><em className="order-secondary-text">{orderPaymentDetail(item)}</em></span>
                     <span><small className="order-label">生产</small><strong className="order-primary-text">{orderStatusLabel(item.production_status, productionStatusOptions)}</strong><em className="order-secondary-text">{orderProductionDetail(item)}</em></span>
-                    <span><small className="order-label">运输</small><strong className="order-primary-text">{orderStatusLabel(item.shipment_status, shipmentStatusOptions)}</strong><em className="order-secondary-text">{orderShipmentDetail(item)}</em></span>
+                    <span><small className="order-label">运输</small><strong className="order-primary-text">{Number(item.shipment_count || 0) > 0 ? ({ not_shipped: "未发货", partially_shipped: "部分发货", fully_shipped: "已全部发货" } as Row)[String(item.shipment_summary_status)] : orderStatusLabel(item.shipment_status, shipmentStatusOptions)}</strong><em className="order-secondary-text">{Number(item.shipment_count || 0) > 0 ? `已发 ${Number(item.shipment_shipped_quantity || 0).toLocaleString()} / 待发 ${Number(item.shipment_pending_quantity || 0).toLocaleString()} · ${item.shipment_count} 个批次` : orderShipmentDetail(item)}</em></span>
                   </div>
                   {item.progress_next_step ? <p className="order-next-step"><span>当前进展 / 下一步</span>{item.progress_next_step}</p> : null}
                   {risks.length ? (
@@ -7593,8 +7734,15 @@ function OrdersView({
           </section>
 
           <section className="editor-section">
-            <div className="editor-heading"><div><span>SHIPMENT</span><h3>运输</h3></div></div>
-            <div className="form-grid order-form-grid">
+            <div className="editor-heading">
+              <div><span>SHIPMENT</span><h3>运输</h3></div>
+              {selectedOrder && !shipmentDraft ? (
+                <button type="button" onClick={() => startShipment(undefined, !selectedShipments.length && hasLegacyShipmentData(order))}>
+                  + {selectedShipments.length ? "添加发货批次" : hasLegacyShipmentData(order) ? "添加第二批发货" : "添加发货批次"}
+                </button>
+              ) : null}
+            </div>
+            {!selectedShipments.length ? <div className="form-grid order-form-grid">
               <label>
                 运输方式
                 <select name="shippingMethod" value={shippingMethod} onChange={(event) => setShippingMethod(event.target.value)}>
@@ -7649,7 +7797,67 @@ function OrdersView({
                   <label>物流单号<input name="logisticsNumber" defaultValue={order.logistics_number || ""} /></label>
                 </>
               ) : null}
-            </div>
+            </div> : (
+              <div className="shipment-batches">
+                <div className="shipment-summary">
+                  <span>订单 {selectedShipmentSummary.orderedQuantity}</span>
+                  <span>已分配 {selectedShipmentSummary.allocatedQuantity}</span>
+                  <span>已发 {selectedShipmentSummary.shippedQuantity}</span>
+                  <span>待发 {selectedShipmentSummary.pendingQuantity}</span>
+                  <span>未分配 {selectedShipmentSummary.unallocatedQuantity}</span>
+                </div>
+                {selectedShipments.map((shipment) => {
+                  const batchItems = shipmentItemsByShipmentId.get(String(shipment.id)) || [];
+                  return (
+                    <article className="shipment-batch-card" key={shipment.id}>
+                      <div className="shipment-batch-heading">
+                        <div><strong>{shipmentLabel(shipment)}</strong><small>{shippingMethodLabel(shipment.shipping_method)} · {orderStatusLabel(shipment.shipment_status, shipmentStatusOptions)}</small></div>
+                        <div><button type="button" onClick={() => startShipment(shipment)}>编辑</button><button className="danger-button" type="button" onClick={() => void deleteShipment(shipment)}>删除</button></div>
+                      </div>
+                      <div className="shipment-batch-items">
+                        {batchItems.map((entry) => {
+                          const item = selectedOrderItems.find((candidate) => candidate.id === entry.order_item_id);
+                          return <span key={entry.id}>{item?.description || "车型"} × {Number(entry.quantity).toLocaleString()}</span>;
+                        })}
+                      </div>
+                      <p>{shipment.actual_shipping_date ? `实际发货 ${formatDate(shipment.actual_shipping_date)}` : shipment.expected_shipping_date ? `预计发货 ${formatDate(shipment.expected_shipping_date)}` : "发货日期待安排"}{shipment.estimated_delivery_date ? ` · 预计收货 ${formatDate(shipment.estimated_delivery_date)}` : ""}</p>
+                      <small>{shipment.bl_number ? `BL ${shipment.bl_number}` : shipment.awb_number ? `AWB ${shipment.awb_number}` : shipment.tracking_number ? `Tracking ${shipment.tracking_number}` : shipment.logistics_number ? `物流单号 ${shipment.logistics_number}` : "暂无运输单号"}</small>
+                    </article>
+                  );
+                })}
+              </div>
+            )}
+            {shipmentDraft ? (
+              <div className="shipment-editor">
+                {shipmentDraft.copyLegacy ? <p className="inline-warning">首次启用分批发货：请确认第一批实际包含的车型数量。旧运输资料只复制到第一批，不会自动假设整单已发；保存后将继续录入第二批。</p> : null}
+                {shipmentDraft.actualShippingDate ? <p className="inline-warning">该批次已实际发货。修改会重算已发数量、销售归属日期和相关风险提醒。</p> : null}
+                <div className="form-grid order-form-grid">
+                  <label>批次名称<input value={String(shipmentDraft.batchName || "")} placeholder={`第${shipmentDraft.batchNo || 1}批`} onChange={(event) => updateShipmentDraft("batchName", event.target.value)} /></label>
+                  <label>运输方式<select value={String(shipmentDraft.shippingMethod || "")} onChange={(event) => updateShipmentDraft("shippingMethod", event.target.value)}><option value="">未设置</option><option value="sea_freight">Sea Freight 海运</option><option value="air_freight">Air Freight 空运</option><option value="express">Express 快递</option><option value="domestic">Domestic 国内物流</option><option value="pickup">Pickup 自提</option><option value="other">Other 其他</option></select></label>
+                  <label>运输状态<select value={String(shipmentDraft.shipmentStatus || "not_arranged")} onChange={(event) => updateShipmentDraft("shipmentStatus", event.target.value)}>{shipmentStatusOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+                  <label>预计发货日期<DateInput value={String(shipmentDraft.expectedShippingDate || "")} onChange={(event) => updateShipmentDraft("expectedShippingDate", event.target.value)} /></label>
+                  <label>实际发货日期<DateInput value={String(shipmentDraft.actualShippingDate || "")} onChange={(event) => updateShipmentDraft("actualShippingDate", event.target.value)} /></label>
+                  <label>预计客户收货日期<DateInput value={String(shipmentDraft.estimatedDeliveryDate || "")} onChange={(event) => updateShipmentDraft("estimatedDeliveryDate", event.target.value)} /></label>
+                  {shipmentDraft.shippingMethod === "sea_freight" ? <><label>船公司<input value={String(shipmentDraft.shippingCompany || "")} onChange={(event) => updateShipmentDraft("shippingCompany", event.target.value)} /></label><label>货代<input value={String(shipmentDraft.forwarder || "")} onChange={(event) => updateShipmentDraft("forwarder", event.target.value)} /></label><label>柜号<input value={String(shipmentDraft.containerNumber || "")} onChange={(event) => updateShipmentDraft("containerNumber", event.target.value)} /></label><label>船名<input value={String(shipmentDraft.vessel || "")} onChange={(event) => updateShipmentDraft("vessel", event.target.value)} /></label><label>航次<input value={String(shipmentDraft.voyage || "")} onChange={(event) => updateShipmentDraft("voyage", event.target.value)} /></label><label>装运港<input value={String(shipmentDraft.portOfLoading || "")} onChange={(event) => updateShipmentDraft("portOfLoading", event.target.value)} /></label><label>目的港<input value={String(shipmentDraft.portOfDischarge || "")} onChange={(event) => updateShipmentDraft("portOfDischarge", event.target.value)} /></label><label>BL No.<input value={String(shipmentDraft.blNumber || "")} onChange={(event) => updateShipmentDraft("blNumber", event.target.value)} /></label></> : null}
+                  {shipmentDraft.shippingMethod === "air_freight" ? <label>AWB<input value={String(shipmentDraft.awbNumber || "")} onChange={(event) => updateShipmentDraft("awbNumber", event.target.value)} /></label> : null}
+                  {shipmentDraft.shippingMethod === "express" ? <><label>快递公司<input value={String(shipmentDraft.carrierCompany || "")} onChange={(event) => updateShipmentDraft("carrierCompany", event.target.value)} /></label><label>Tracking No.<input value={String(shipmentDraft.trackingNumber || "")} onChange={(event) => updateShipmentDraft("trackingNumber", event.target.value)} /></label></> : null}
+                  {shipmentDraft.shippingMethod === "domestic" ? <><label>物流公司<input value={String(shipmentDraft.logisticsCompany || "")} onChange={(event) => updateShipmentDraft("logisticsCompany", event.target.value)} /></label><label>物流单号<input value={String(shipmentDraft.logisticsNumber || "")} onChange={(event) => updateShipmentDraft("logisticsNumber", event.target.value)} /></label></> : null}
+                  <label>ETA<DateInput value={String(shipmentDraft.eta || "")} onChange={(event) => updateShipmentDraft("eta", event.target.value)} /></label>
+                  <label>批次备注<textarea rows={2} value={String(shipmentDraft.notes || "")} onChange={(event) => updateShipmentDraft("notes", event.target.value)} /></label>
+                </div>
+                <div className="shipment-item-allocation">
+                  <strong>本批发货车型</strong>
+                  {selectedOrderItems.map((item) => {
+                    const draftItems = Array.isArray(shipmentDraft.items) ? shipmentDraft.items as Row[] : [];
+                    const draftItem = draftItems.find((entry) => entry.orderItemId === item.id);
+                    const allocatedElsewhere = selectedShipmentItems.filter((entry) => entry.order_item_id === item.id && entry.shipment_id !== shipmentDraft.shipmentId).reduce((sum, entry) => sum + Number(entry.quantity || 0), 0);
+                    const available = Math.max(0, Number(item.quantity || 0) - allocatedElsewhere);
+                    return <label key={item.id}><span>{item.description || "车型"}<small>订单 {Number(item.quantity || 0)} · 本批最多 {available}</small></span><input type="number" min="0" max={available} step="1" value={String(draftItem?.quantity ?? "")} onChange={(event) => updateShipmentDraft("items", draftItems.map((entry) => entry.orderItemId === item.id ? { ...entry, quantity: event.target.value } : entry))} /></label>;
+                  })}
+                </div>
+                <div className="dialog-actions"><button type="button" onClick={() => setShipmentDraft(null)}>取消</button><button className="primary-button" type="button" disabled={shipmentBusy} onClick={() => void saveShipment()}>{shipmentBusy ? "保存中…" : "保存批次"}</button></div>
+              </div>
+            ) : null}
           </section>
 
           <section className="editor-section">

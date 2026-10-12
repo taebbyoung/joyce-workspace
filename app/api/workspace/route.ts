@@ -5,6 +5,7 @@ import {
 } from "@/lib/home-bootstrap";
 import { ensureOrderRiskSeeded } from "@/lib/order-risk-bootstrap";
 import { getSalesBusinessDate } from "@/lib/order-sales-attribution";
+import { attachShipmentSummaries } from "@/lib/order-shipments";
 
 export const runtime = "edge";
 
@@ -109,6 +110,8 @@ export async function GET() {
       orders,
       orderItems,
       orderPayments,
+      orderShipments,
+      orderShipmentItems,
       orderRisks,
       orderStatusHistory,
       projects,
@@ -141,6 +144,7 @@ export async function GET() {
         .first<Record<string, number>>(),
       all<Record<string, unknown>>(
         `SELECT customer_code, expected_shipping_date, shipment_status,
+                (SELECT MAX(s.actual_shipping_date) FROM order_shipments s WHERE s.order_id = orders.id) AS shipment_actual_shipping_date,
                 balance_received_date, cny_amount, currency_status, deleted_at
          FROM orders
          WHERE currency_status = 'confirmed' AND deleted_at IS NULL`,
@@ -192,6 +196,12 @@ export async function GET() {
       ),
       all<Record<string, unknown>>(
         "SELECT * FROM order_payments ORDER BY order_id, payment_type, payment_date, sort_order, created_at",
+      ),
+      all<Record<string, unknown>>(
+        "SELECT * FROM order_shipments ORDER BY order_id, sort_order, batch_no",
+      ),
+      all<Record<string, unknown>>(
+        "SELECT * FROM order_shipment_items ORDER BY order_id, shipment_id, created_at",
       ),
       all<Record<string, unknown>>(
         `SELECT * FROM order_risks
@@ -281,9 +291,11 @@ export async function GET() {
       }),
       customers,
       contacts,
-      orders,
+      orders: attachShipmentSummaries(orders, orderItems, orderShipments, orderShipmentItems),
       orderItems,
       orderPayments,
+      orderShipments,
+      orderShipmentItems,
       orderRisks,
       orderStatusHistory,
       accessorySales,
