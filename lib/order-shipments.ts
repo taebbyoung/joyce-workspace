@@ -27,17 +27,9 @@ export function summarizeOrderShipments(
 ) {
   const shipmentIds = new Set(shipments.map((shipment) => String(shipment.id)));
   const relevantItems = shipmentItems.filter((item) => shipmentIds.has(String(item.shipment_id ?? item.shipmentId)));
-  const actualShipmentIds = new Set(
-    shipments
-      .filter((shipment) => String(shipment.actual_shipping_date ?? shipment.actualShippingDate ?? "").slice(0, 10))
-      .map((shipment) => String(shipment.id)),
-  );
   const orderedQuantity = orderItems.reduce((sum, item) => sum + number(item.quantity), 0);
   const allocatedQuantity = relevantItems.reduce((sum, item) => sum + number(item.quantity), 0);
-  const shippedQuantity = relevantItems.reduce(
-    (sum, item) => actualShipmentIds.has(String(item.shipment_id ?? item.shipmentId)) ? sum + number(item.quantity) : sum,
-    0,
-  );
+  const shippedQuantity = allocatedQuantity;
   const actualDates = shipments
     .map((shipment) => String(shipment.actual_shipping_date ?? shipment.actualShippingDate ?? "").slice(0, 10))
     .filter((date) => /^\d{4}-\d{2}-\d{2}$/.test(date))
@@ -47,9 +39,7 @@ export function summarizeOrderShipments(
     const allocated = relevantItems
       .filter((entry) => String(entry.order_item_id ?? entry.orderItemId) === id)
       .reduce((sum, entry) => sum + number(entry.quantity), 0);
-    const shipped = relevantItems
-      .filter((entry) => String(entry.order_item_id ?? entry.orderItemId) === id && actualShipmentIds.has(String(entry.shipment_id ?? entry.shipmentId)))
-      .reduce((sum, entry) => sum + number(entry.quantity), 0);
+    const shipped = allocated;
     const ordered = number(item.quantity);
     return { orderItemId: id, ordered, allocated, shipped, unallocated: Math.max(0, ordered - allocated), pending: Math.max(0, ordered - shipped) };
   });

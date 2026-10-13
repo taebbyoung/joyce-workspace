@@ -6455,6 +6455,13 @@ const shipmentStatusOptions = [
   ["delivered", "已签收"],
 ] as const;
 
+const actualShipmentStatusOptions = [
+  ["in_transit", "运输中"],
+  ["arrived", "已到达"],
+  ["delivered", "已签收"],
+  ["abnormal", "异常"],
+] as const;
+
 const legacyShipmentStatusLabels: Record<string, string> = {
   not_shipped: "未安排（旧状态）",
   booking_pending: "已安排",
@@ -6896,12 +6903,16 @@ function OrdersView({
       orderItemId: item.id,
       quantity: sourceItems.find((entry) => entry.order_item_id === item.id)?.quantity ?? "",
     }));
+    const storedShipmentStatus = editableShipmentStatus(shipment?.shipment_status || (copyLegacy ? selectedOrder.shipment_status : ""));
+    const shipmentStatus = actualShipmentStatusOptions.some(([value]) => value === storedShipmentStatus)
+      ? storedShipmentStatus
+      : "in_transit";
     setShipmentDraft({
       shipmentId: shipment?.id || "",
       batchName: shipment?.batch_name || "",
       batchNo: shipment?.batch_no || savedShipments.length + 1,
       shippingMethod: shipment?.shipping_method || (copyLegacy ? selectedOrder.shipping_method : "") || "",
-      shipmentStatus: shipment?.shipment_status || (copyLegacy ? editableShipmentStatus(selectedOrder.shipment_status) : "not_arranged"),
+      shipmentStatus,
       expectedShippingDate: String(shipment?.expected_shipping_date || (copyLegacy ? selectedOrder.expected_shipping_date : "") || "").slice(0, 10),
       actualShippingDate: String(shipment?.actual_shipping_date || "").slice(0, 10),
       estimatedDeliveryDate: String(shipment?.estimated_delivery_date || (copyLegacy ? selectedOrder.estimated_delivery_date : "") || "").slice(0, 10),
@@ -6949,7 +6960,7 @@ function OrdersView({
         batchName: "",
         batchNo: Number(result.order?.shipment_count || 1) + 1,
         shippingMethod: "",
-        shipmentStatus: "not_arranged",
+        shipmentStatus: "in_transit",
         expectedShippingDate: "",
         actualShippingDate: "",
         estimatedDeliveryDate: "",
@@ -6965,10 +6976,7 @@ function OrdersView({
 
   async function deleteShipment(shipment: Row) {
     if (!selectedOrder) return;
-    const warning = shipment.actual_shipping_date
-      ? "该批次已经实际发货。删除后会重算已发数量、销售归属和风险提醒，确认删除吗？"
-      : "确认删除该发货批次吗？";
-    if (!window.confirm(warning)) return;
+    if (!window.confirm("该批次为已发货记录。删除后会影响订单已发数量、待发数量及销售归属日期，确定删除吗？")) return;
     setShipmentBusy(true);
     const response = await fetch("/api/orders/shipments", {
       method: "POST", headers: { "content-type": "application/json" },
@@ -7756,6 +7764,13 @@ function OrdersView({
                 </button>
               ) : null}
             </div>
+            {selectedOrder && (selectedShipments.length > 0 || !hasLegacyShipmentData(order)) ? (
+              <div className="shipment-summary">
+                <span>订单 {selectedShipmentSummary.orderedQuantity}</span>
+                <span>已发 {selectedShipmentSummary.shippedQuantity}</span>
+                <span>待发 {selectedShipmentSummary.pendingQuantity}</span>
+              </div>
+            ) : null}
             {!selectedShipments.length ? <div className="form-grid order-form-grid">
               <label>
                 运输方式
@@ -7813,19 +7828,12 @@ function OrdersView({
               ) : null}
             </div> : (
               <div className="shipment-batches">
-                <div className="shipment-summary">
-                  <span>订单 {selectedShipmentSummary.orderedQuantity}</span>
-                  <span>已分配 {selectedShipmentSummary.allocatedQuantity}</span>
-                  <span>已发 {selectedShipmentSummary.shippedQuantity}</span>
-                  <span>待发 {selectedShipmentSummary.pendingQuantity}</span>
-                  <span>未分配 {selectedShipmentSummary.unallocatedQuantity}</span>
-                </div>
                 {selectedShipments.map((shipment) => {
                   const batchItems = shipmentItemsByShipmentId.get(String(shipment.id)) || [];
                   return (
                     <article className="shipment-batch-card" key={shipment.id}>
                       <div className="shipment-batch-heading">
-                        <div><strong>{shipmentLabel(shipment)}</strong><small>{shippingMethodLabel(shipment.shipping_method)} · {orderStatusLabel(shipment.shipment_status, shipmentStatusOptions)}</small></div>
+                        <div><strong>{shipmentLabel(shipment)}</strong><small>{shippingMethodLabel(shipment.shipping_method)} · {orderStatusLabel(shipment.shipment_status, actualShipmentStatusOptions)}</small></div>
                         <div><button type="button" onClick={() => startShipment(shipment)}>编辑</button><button className="danger-button" type="button" onClick={() => void deleteShipment(shipment)}>删除</button></div>
                       </div>
                       <div className="shipment-batch-items">
@@ -7834,7 +7842,7 @@ function OrdersView({
                           return <span key={entry.id}>{item?.description || "车型"} × {Number(entry.quantity).toLocaleString()}</span>;
                         })}
                       </div>
-                      <p>{shipment.actual_shipping_date ? `实际发货 ${formatDate(shipment.actual_shipping_date)}` : shipment.expected_shipping_date ? `预计发货 ${formatDate(shipment.expected_shipping_date)}` : "发货日期待安排"}{shipment.estimated_delivery_date ? ` · 预计收货 ${formatDate(shipment.estimated_delivery_date)}` : ""}</p>
+                      <p>{shipment.actual_shipping_date ? `实际发货 ${formatDate(shipment.actual_shipping_date)}` : "实际发货日期待补充"}{shipment.estimated_delivery_date ? ` · 预计收货 ${formatDate(shipment.estimated_delivery_date)}` : ""}</p>
                       <small>{shipment.bl_number ? `BL ${shipment.bl_number}` : shipment.awb_number ? `AWB ${shipment.awb_number}` : shipment.tracking_number ? `Tracking ${shipment.tracking_number}` : shipment.logistics_number ? `物流单号 ${shipment.logistics_number}` : "暂无运输单号"}</small>
                     </article>
                   );
@@ -7844,13 +7852,13 @@ function OrdersView({
             {shipmentDraft ? (
               <div className="shipment-editor">
                 {shipmentDraft.copyLegacy ? <p className="inline-warning">首次启用分批发货：请确认第一批实际包含的车型数量。旧运输资料只复制到第一批，不会自动假设整单已发；保存后将继续录入第二批。</p> : null}
-                {shipmentDraft.actualShippingDate ? <p className="inline-warning">该批次已实际发货。修改会重算已发数量、销售归属日期和相关风险提醒。</p> : null}
+                {shipmentDraft.shipmentId ? <p className="inline-warning">该批次为已发货记录，修改车型或数量会影响订单已发/待发统计及销售归属日期。</p> : <p className="form-note">Shipment Batch 代表一次已经发生的发货，请记录本批实际发出的车型、数量和日期。</p>}
                 <div className="form-grid order-form-grid">
                   <label>批次名称<input value={String(shipmentDraft.batchName || "")} placeholder={`第${shipmentDraft.batchNo || 1}批`} onChange={(event) => updateShipmentDraft("batchName", event.target.value)} /></label>
                   <label>运输方式<select value={String(shipmentDraft.shippingMethod || "")} onChange={(event) => updateShipmentDraft("shippingMethod", event.target.value)}><option value="">未设置</option><option value="sea_freight">Sea Freight 海运</option><option value="air_freight">Air Freight 空运</option><option value="express">Express 快递</option><option value="domestic">Domestic 国内物流</option><option value="pickup">Pickup 自提</option><option value="other">Other 其他</option></select></label>
-                  <label>运输状态<select value={String(shipmentDraft.shipmentStatus || "not_arranged")} onChange={(event) => updateShipmentDraft("shipmentStatus", event.target.value)}>{shipmentStatusOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+                  <label>运输状态<select value={String(shipmentDraft.shipmentStatus || "in_transit")} onChange={(event) => updateShipmentDraft("shipmentStatus", event.target.value)}>{actualShipmentStatusOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
                   <label>预计发货日期<DateInput value={String(shipmentDraft.expectedShippingDate || "")} onChange={(event) => updateShipmentDraft("expectedShippingDate", event.target.value)} /></label>
-                  <label>实际发货日期<DateInput value={String(shipmentDraft.actualShippingDate || "")} onChange={(event) => updateShipmentDraft("actualShippingDate", event.target.value)} /></label>
+                  <label>实际发货日期<DateInput value={String(shipmentDraft.actualShippingDate || "")} onChange={(event) => updateShipmentDraft("actualShippingDate", event.target.value)} /><small>必填；该批次按实际发货记录统计</small></label>
                   <label>预计客户收货日期<DateInput value={String(shipmentDraft.estimatedDeliveryDate || "")} onChange={(event) => updateShipmentDraft("estimatedDeliveryDate", event.target.value)} /></label>
                   {shipmentDraft.shippingMethod === "sea_freight" ? <><label>船公司<input value={String(shipmentDraft.shippingCompany || "")} onChange={(event) => updateShipmentDraft("shippingCompany", event.target.value)} /></label><label>货代<input value={String(shipmentDraft.forwarder || "")} onChange={(event) => updateShipmentDraft("forwarder", event.target.value)} /></label><label>柜号<input value={String(shipmentDraft.containerNumber || "")} onChange={(event) => updateShipmentDraft("containerNumber", event.target.value)} /></label><label>船名<input value={String(shipmentDraft.vessel || "")} onChange={(event) => updateShipmentDraft("vessel", event.target.value)} /></label><label>航次<input value={String(shipmentDraft.voyage || "")} onChange={(event) => updateShipmentDraft("voyage", event.target.value)} /></label><label>装运港<input value={String(shipmentDraft.portOfLoading || "")} onChange={(event) => updateShipmentDraft("portOfLoading", event.target.value)} /></label><label>目的港<input value={String(shipmentDraft.portOfDischarge || "")} onChange={(event) => updateShipmentDraft("portOfDischarge", event.target.value)} /></label><label>BL No.<input value={String(shipmentDraft.blNumber || "")} onChange={(event) => updateShipmentDraft("blNumber", event.target.value)} /></label></> : null}
                   {shipmentDraft.shippingMethod === "air_freight" ? <label>AWB<input value={String(shipmentDraft.awbNumber || "")} onChange={(event) => updateShipmentDraft("awbNumber", event.target.value)} /></label> : null}
@@ -7864,9 +7872,10 @@ function OrdersView({
                   {selectedOrderItems.map((item) => {
                     const draftItems = Array.isArray(shipmentDraft.items) ? shipmentDraft.items as Row[] : [];
                     const draftItem = draftItems.find((entry) => entry.orderItemId === item.id);
-                    const allocatedElsewhere = selectedShipmentItems.filter((entry) => entry.order_item_id === item.id && entry.shipment_id !== shipmentDraft.shipmentId).reduce((sum, entry) => sum + Number(entry.quantity || 0), 0);
-                    const available = Math.max(0, Number(item.quantity || 0) - allocatedElsewhere);
-                    return <label key={item.id}><span>{item.description || "车型"}<small>订单 {Number(item.quantity || 0)} · 本批最多 {available}</small></span><input type="number" min="0" max={available} step="1" value={String(draftItem?.quantity ?? "")} onChange={(event) => updateShipmentDraft("items", draftItems.map((entry) => entry.orderItemId === item.id ? { ...entry, quantity: event.target.value } : entry))} /></label>;
+                    const shippedElsewhere = selectedShipmentItems.filter((entry) => entry.order_item_id === item.id && entry.shipment_id !== shipmentDraft.shipmentId).reduce((sum, entry) => sum + Number(entry.quantity || 0), 0);
+                    const available = Math.max(0, Number(item.quantity || 0) - shippedElsewhere);
+                    const itemSummary = selectedShipmentSummary.itemSummaries.find((summary) => summary.orderItemId === String(item.id));
+                    return <label key={item.id}><span>{item.description || "车型"}<small>订单 {Number(item.quantity || 0)} · 已发 {itemSummary?.shipped || 0} · 剩余可发 {itemSummary?.pending ?? Number(item.quantity || 0)}</small></span><input type="number" min="0" max={available} step="1" value={String(draftItem?.quantity ?? "")} onChange={(event) => updateShipmentDraft("items", draftItems.map((entry) => entry.orderItemId === item.id ? { ...entry, quantity: event.target.value } : entry))} /></label>;
                   })}
                 </div>
                 <div className="dialog-actions"><button type="button" onClick={() => setShipmentDraft(null)}>取消</button><button className="primary-button" type="button" disabled={shipmentBusy} onClick={() => void saveShipment()}>{shipmentBusy ? "保存中…" : "保存批次"}</button></div>

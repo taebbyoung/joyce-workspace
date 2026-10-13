@@ -6,7 +6,7 @@ export const runtime = "edge";
 
 type Row = Record<string, unknown>;
 
-const shipmentStatuses = new Set(["not_arranged", "arranged", "ready_to_ship", "in_transit", "arrived", "delivered", "abnormal"]);
+const shipmentStatuses = new Set(["in_transit", "arrived", "delivered", "abnormal"]);
 const shippingMethods = new Set(["sea_freight", "air_freight", "express", "domestic", "pickup", "other"]);
 
 function text(value: unknown, max = 5000) {
@@ -95,24 +95,24 @@ export async function POST(request: Request) {
       seen.add(orderItemId);
       return { id: text(row.id, 100) || crypto.randomUUID(), orderItemId, quantity };
     });
-    if (!items.length) return errorResponse("请至少分配一个车型和数量。");
+    if (!items.length) return errorResponse("请至少填写一个实际发货车型和数量。");
     const orderItems = await db.prepare("SELECT * FROM order_items WHERE order_id = ?").bind(orderId).all<Row>();
     const orderItemById = new Map(orderItems.results.map((item) => [String(item.id), item]));
     for (const item of items) if (!orderItemById.has(item.orderItemId)) return errorResponse("发货车型不属于当前订单。", 409);
-    const allocations = await db.prepare(
-      `SELECT order_item_id, COALESCE(SUM(quantity), 0) AS allocated
+    const shippedRows = await db.prepare(
+      `SELECT order_item_id, COALESCE(SUM(quantity), 0) AS shipped
        FROM order_shipment_items WHERE order_id = ? AND shipment_id <> ? GROUP BY order_item_id`,
-    ).bind(orderId, shipmentId).all<{ order_item_id: string; allocated: number }>();
-    const allocatedById = new Map(allocations.results.map((row) => [String(row.order_item_id), Number(row.allocated || 0)]));
+    ).bind(orderId, shipmentId).all<{ order_item_id: string; shipped: number }>();
+    const shippedById = new Map(shippedRows.results.map((row) => [String(row.order_item_id), Number(row.shipped || 0)]));
     for (const item of items) {
       const ordered = Number(orderItemById.get(item.orderItemId)?.quantity || 0);
-      const allocated = allocatedById.get(item.orderItemId) || 0;
-      if (allocated + item.quantity > ordered) {
-        return errorResponse(`批次数量超过订单数量：已分配 ${allocated}，本次 ${item.quantity}，订单 ${ordered}。`, 409);
+      const shipped = shippedById.get(item.orderItemId) || 0;
+      if (shipped + item.quantity > ordered) {
+        return errorResponse(`发货数量超过订单数量：已发 ${shipped}，本批 ${item.quantity}，订单 ${ordered}。`, 409);
       }
     }
     const shippingMethod = shippingMethods.has(text(payload.shippingMethod, 40)) ? text(payload.shippingMethod, 40) : null;
-    const shipmentStatus = shipmentStatuses.has(text(payload.shipmentStatus, 40)) ? text(payload.shipmentStatus, 40) : "not_arranged";
+    const shipmentStatus = shipmentStatuses.has(text(payload.shipmentStatus, 40)) ? text(payload.shipmentStatus, 40) : "in_transit";
     const copyLegacy = Boolean(payload.copyLegacy) && !existing;
     if (copyLegacy) {
       const count = await db.prepare("SELECT COUNT(*) AS total FROM order_shipments WHERE order_id = ?").bind(orderId).first<{ total: number }>();
@@ -127,7 +127,7 @@ export async function POST(request: Request) {
     const values = {
       batchName: nullable(payload.batchName, 100),
       shippingMethod: shippingMethod ?? legacy("shipping_method"),
-      shipmentStatus: shipmentStatus || legacy("shipment_status") || "not_arranged",
+      shipmentStatus: shipmentStatus || legacy("shipment_status") || "in_transit",
       expectedShippingDate: dateOnly(payload.expectedShippingDate) ?? legacy("expected_shipping_date"),
       actualShippingDate: dateOnly(payload.actualShippingDate) ?? (copyLegacy && ["in_transit", "arrived", "delivered", "shipped", "completed"].includes(String(order.shipment_status || "")) ? legacy("expected_shipping_date") : null),
       estimatedDeliveryDate: dateOnly(payload.estimatedDeliveryDate) ?? legacy("estimated_delivery_date"),
@@ -147,6 +147,9 @@ export async function POST(request: Request) {
       eta: dateOnly(payload.eta) ?? legacy("eta"),
       notes: nullable(payload.notes, 5000),
     };
+    if (!values.actualShippingDate) {
+      return errorResponse("请填写实际发货日期。该批次按实际发货记录统计。");
+    }
     const statement = existing
       ? db.prepare(`UPDATE order_shipments SET batch_name=?, shipping_method=?, shipment_status=?, expected_shipping_date=?, actual_shipping_date=?, estimated_delivery_date=?, container_number=?, bl_number=?, awb_number=?, carrier_company=?, tracking_number=?, logistics_company=?, logistics_number=?, shipping_company=?, forwarder=?, vessel=?, voyage=?, port_of_loading=?, port_of_discharge=?, eta=?, notes=?, updated_at=? WHERE id=? AND order_id=?`)
           .bind(...Object.values(values), now, shipmentId, orderId)
@@ -165,7 +168,7 @@ export async function POST(request: Request) {
     return Response.json(await orderSnapshot(db, orderId));
   } catch (error) {
     const message = error instanceof Error ? error.message : "发货批次保存失败。";
-    if (message.includes("shipment_quantity_exceeds_ordered")) return errorResponse("其他操作刚刚更新了发货数量，本次分配已超过订单数量，请刷新后重试。", 409);
+    if (message.includes("shipment_quantity_exceeds_ordered")) return errorResponse("其他操作刚刚更新了已发数量，本批发货已超过订单数量，请刷新后重试。", 409);
     if (message.includes("shipment_order_mismatch") || message.includes("shipment_item_order_mismatch")) return errorResponse("发货批次与订单车型不匹配。", 409);
     return errorResponse(message, 500);
   }

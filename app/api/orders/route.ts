@@ -597,18 +597,18 @@ export async function POST(request: Request) {
       items && (!existing || hasOrderItemChanges(existingItems.results, items)),
     );
     if (existing && items && itemsChanged) {
-      const allocations = await db.prepare(
-        `SELECT order_item_id, COALESCE(SUM(quantity), 0) AS allocated
+      const shippedRows = await db.prepare(
+        `SELECT order_item_id, COALESCE(SUM(quantity), 0) AS shipped
          FROM order_shipment_items WHERE order_id = ? GROUP BY order_item_id`,
-      ).bind(id).all<{ order_item_id: string; allocated: number }>();
+      ).bind(id).all<{ order_item_id: string; shipped: number }>();
       const nextById = new Map(items.map((item) => [item.id, item]));
-      for (const allocation of allocations.results) {
-        const nextItem = nextById.get(String(allocation.order_item_id));
+      for (const shippedRow of shippedRows.results) {
+        const nextItem = nextById.get(String(shippedRow.order_item_id));
         if (!nextItem) {
-          return errorResponse("该车型已有发货批次分配，不能删除；请先调整相关发货批次。", 409);
+          return errorResponse("该车型已有发货记录，请先调整对应发货批次。", 409);
         }
-        if (Number(nextItem.quantity ?? 0) < Number(allocation.allocated || 0)) {
-          return errorResponse(`车型“${nextItem.description}”数量不能低于已分配的 ${Number(allocation.allocated || 0)}。`, 409);
+        if (Number(nextItem.quantity ?? 0) < Number(shippedRow.shipped || 0)) {
+          return errorResponse(`车型“${nextItem.description}”数量不能低于已发数量 ${Number(shippedRow.shipped || 0)}。`, 409);
         }
       }
     }
@@ -907,7 +907,7 @@ export async function POST(request: Request) {
   } catch (error) {
     const message = error instanceof Error ? error.message : "订单保存失败。";
     if (message.includes("order_item_quantity_below_allocated") || message.includes("order_item_has_shipment_allocations")) {
-      return errorResponse("订单车型已有发货批次分配，不能删除或降低到已分配数量以下。", 409);
+      return errorResponse("订单车型已有发货记录，不能删除或降低到已发数量以下。", 409);
     }
     return errorResponse(
       message,
