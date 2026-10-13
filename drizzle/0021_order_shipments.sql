@@ -27,9 +27,12 @@ CREATE TABLE IF NOT EXISTS order_shipments (
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+--> statement-breakpoint
 
 CREATE UNIQUE INDEX IF NOT EXISTS order_shipments_order_batch_idx ON order_shipments(order_id, batch_no);
+--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS order_shipments_order_sort_idx ON order_shipments(order_id, sort_order, batch_no);
+--> statement-breakpoint
 
 CREATE TABLE IF NOT EXISTS order_shipment_items (
   id TEXT PRIMARY KEY,
@@ -40,9 +43,12 @@ CREATE TABLE IF NOT EXISTS order_shipment_items (
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+--> statement-breakpoint
 
 CREATE UNIQUE INDEX IF NOT EXISTS order_shipment_items_shipment_item_idx ON order_shipment_items(shipment_id, order_item_id);
+--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS order_shipment_items_order_idx ON order_shipment_items(order_id, order_item_id);
+--> statement-breakpoint
 
 CREATE TRIGGER IF NOT EXISTS order_shipment_items_validate_insert
 BEFORE INSERT ON order_shipment_items
@@ -57,6 +63,7 @@ BEGIN
       THEN RAISE(ABORT, 'shipment_quantity_exceeds_ordered')
   END;
 END;
+--> statement-breakpoint
 
 CREATE TRIGGER IF NOT EXISTS order_shipment_items_validate_update
 BEFORE UPDATE ON order_shipment_items
@@ -71,6 +78,7 @@ BEGIN
       THEN RAISE(ABORT, 'shipment_quantity_exceeds_ordered')
   END;
 END;
+--> statement-breakpoint
 
 CREATE TRIGGER IF NOT EXISTS order_items_protect_allocated_update
 BEFORE UPDATE OF quantity ON order_items
@@ -78,6 +86,7 @@ WHEN NEW.quantity < COALESCE((SELECT SUM(si.quantity) FROM order_shipment_items 
 BEGIN
   SELECT RAISE(ABORT, 'order_item_quantity_below_allocated');
 END;
+--> statement-breakpoint
 
 CREATE TRIGGER IF NOT EXISTS order_items_protect_allocated_delete
 BEFORE DELETE ON order_items
