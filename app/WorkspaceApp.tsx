@@ -42,6 +42,7 @@ import {
 } from "@/lib/order-workflow";
 import { requiresOrderSalesImpactConfirmation } from "@/lib/order-sales-impact";
 import { normalizeOrderPayments } from "@/lib/order-payments";
+import { getOrderPaymentSummary } from "@/lib/order-payment-summary";
 import { hasLegacyShipmentData, shipmentLabel, summarizeOrderShipments } from "@/lib/order-shipments";
 import {
   buildAttributedCustomerContribution,
@@ -6607,6 +6608,8 @@ function OrdersView({
   const [editorCustomerCode, setEditorCustomerCode] = useState("");
   const [editorItems, setEditorItems] = useState<Row[]>([]);
   const [editorPayments, setEditorPayments] = useState<Row[]>([]);
+  const [editorOriginalCurrency, setEditorOriginalCurrency] = useState("USD");
+  const [editorOrderAmount, setEditorOrderAmount] = useState("");
   const [addingPaymentType, setAddingPaymentType] = useState<"deposit" | "balance" | null>(null);
   const [paymentDraftDate, setPaymentDraftDate] = useState("");
   const [paymentDraftAmount, setPaymentDraftAmount] = useState("");
@@ -6869,6 +6872,8 @@ function OrdersView({
       ? orderPaymentsByOrderId.get(String(order.id)) || []
       : [];
     setEditorPayments(normalizeOrderPayments(savedPayments) || []);
+    setEditorOriginalCurrency(String(order?.original_currency || "USD"));
+    setEditorOrderAmount(order?.original_amount === null || order?.original_amount === undefined ? "" : String(order.original_amount));
     setAddingPaymentType(null);
     setPaymentDraftDate("");
     setPaymentDraftAmount("");
@@ -7346,6 +7351,10 @@ function OrdersView({
     : [];
   const selectedShipmentItems = selectedShipments.flatMap((shipment) => shipmentItemsByShipmentId.get(String(shipment.id)) || []);
   const selectedShipmentSummary = summarizeOrderShipments(selectedOrderItems, selectedShipments, selectedShipmentItems);
+  const paymentSummary = useMemo(() => getOrderPaymentSummary({
+    orderAmount: editorOrderAmount,
+    payments: editorPayments,
+  }), [editorOrderAmount, editorPayments]);
   const paymentRecordsByType = (type: "deposit" | "balance") =>
     editorPayments.filter((payment) => payment.paymentType === type);
 
@@ -7638,14 +7647,19 @@ function OrdersView({
 
           <section className="editor-section">
             <div className="editor-heading"><div><span>FINANCIAL</span><h3>金额与付款</h3></div><small>首页销售额仍以确认后的 CNY 为准</small></div>
+            <div className="shipment-summary financial-summary">
+              <span>总金额 {paymentSummary.total === null ? "—" : `${editorOriginalCurrency} ${paymentSummary.total.toLocaleString()}`}</span>
+              <span>已收 {editorOriginalCurrency} {paymentSummary.received.toLocaleString()}</span>
+              <span>{paymentSummary.status === "overpaid" ? "多收" : "待收"} {paymentSummary.status === "missing_total" ? "—" : `${editorOriginalCurrency} ${Number(paymentSummary.overpaid ?? paymentSummary.pending ?? 0).toLocaleString()}`}</span>
+            </div>
             <div className="form-grid order-form-grid">
               <label>
                 原始币种
-                <select name="originalCurrency" defaultValue={order.original_currency || "USD"}>
+                <select name="originalCurrency" value={editorOriginalCurrency} onChange={(event) => setEditorOriginalCurrency(event.target.value)}>
                   {["USD", "EUR", "CNY", "RMB", "GBP"].map((currency) => <option key={currency}>{currency}</option>)}
                 </select>
               </label>
-              <label>订单总金额<input name="originalAmount" type="number" step="0.01" min="0" defaultValue={order.original_amount ?? ""} /></label>
+              <label>订单总金额<input name="originalAmount" type="number" step="0.01" min="0" value={editorOrderAmount} onChange={(event) => setEditorOrderAmount(event.target.value)} /></label>
               <label>固定汇率 → CNY<input name="fixedExchangeRateToCny" type="number" step="0.0001" min="0" defaultValue={order.fixed_exchange_rate_to_cny ?? ""} /></label>
               <label>CNY 金额<input value={order.currency_status === "confirmed" ? Number(order.cny_amount || 0).toFixed(2) : "保存后自动计算"} readOnly /></label>
               <label>其他费用<input name="otherCosts" type="number" step="0.01" min="0" defaultValue={order.other_costs ?? ""} /></label>

@@ -28,6 +28,7 @@ import {
   sumAttributedVehicleSales,
 } from "../lib/order-sales-attribution.ts";
 import { normalizeOrderPayments } from "../lib/order-payments.ts";
+import { getOrderPaymentSummary } from "../lib/order-payment-summary.ts";
 
 const root = new URL("../", import.meta.url);
 const source = (path) => readFile(new URL(path, root), "utf8");
@@ -673,6 +674,59 @@ test("payment mutations normalize API rows before retaining them for later order
   } finally {
     db.close();
   }
+});
+
+test("order payment summary derives received, pending, and overpaid amounts", () => {
+  assert.deepEqual(
+    getOrderPaymentSummary({ orderAmount: 110000, payments: [{ amount: 55000 }, { amount: 11000 }] }),
+    { total: 110000, received: 66000, pending: 44000, overpaid: null, status: "pending" },
+  );
+  assert.deepEqual(
+    getOrderPaymentSummary({ orderAmount: 110000, payments: [] }),
+    { total: 110000, received: 0, pending: 110000, overpaid: null, status: "pending" },
+  );
+  assert.deepEqual(
+    getOrderPaymentSummary({ orderAmount: 110000, payments: [{ amount: 55000 }, { amount: 55000 }] }),
+    { total: 110000, received: 110000, pending: 0, overpaid: null, status: "settled" },
+  );
+  assert.deepEqual(
+    getOrderPaymentSummary({ orderAmount: 100000, payments: [{ amount: 55000 }, { amount: 50000 }] }),
+    { total: 100000, received: 105000, pending: null, overpaid: 5000, status: "overpaid" },
+  );
+  assert.deepEqual(
+    getOrderPaymentSummary({ orderAmount: "", payments: [{ amount: 10000 }] }),
+    { total: null, received: 10000, pending: null, overpaid: null, status: "missing_total" },
+  );
+
+  let payments = [{ id: "P1", amount: 55000 }, { id: "B1", amount: 11000 }];
+  payments = [...payments, { id: "B2", amount: 20000 }];
+  assert.deepEqual(
+    getOrderPaymentSummary({ orderAmount: 110000, payments }),
+    { total: 110000, received: 86000, pending: 24000, overpaid: null, status: "pending" },
+  );
+  payments = payments.map((payment) => payment.id === "B1" ? { ...payment, amount: 15000 } : payment);
+  assert.equal(getOrderPaymentSummary({ orderAmount: 110000, payments }).received, 90000);
+  payments = payments.filter((payment) => payment.id !== "B2");
+  assert.deepEqual(
+    getOrderPaymentSummary({ orderAmount: 110000, payments }),
+    { total: 110000, received: 70000, pending: 40000, overpaid: null, status: "pending" },
+  );
+  assert.deepEqual(
+    getOrderPaymentSummary({ orderAmount: 60000, payments }),
+    { total: 60000, received: 70000, pending: null, overpaid: 10000, status: "overpaid" },
+  );
+});
+
+test("financial summary uses normalized editor payments and reacts to editor state", async () => {
+  const app = await source("app/WorkspaceApp.tsx");
+  const ordersView = app.slice(app.indexOf("function OrdersView("), app.indexOf("function AfterSalesView("));
+  assert.match(ordersView, /normalizeOrderPayments\(savedPayments\)/);
+  assert.match(ordersView, /getOrderPaymentSummary\(\{[\s\S]*orderAmount: editorOrderAmount,[\s\S]*payments: editorPayments/);
+  assert.match(ordersView, /shipment-summary financial-summary/);
+  assert.match(ordersView, /总金额[\s\S]*editorOriginalCurrency[\s\S]*已收[\s\S]*editorOriginalCurrency/);
+  assert.match(ordersView, /paymentSummary\.status === "overpaid" \? "多收" : "待收"/);
+  assert.match(ordersView, /name="originalAmount"[\s\S]*value=\{editorOrderAmount\}[\s\S]*setEditorOrderAmount/);
+  assert.match(ordersView, /function applyPaymentMutation[\s\S]*normalizeOrderPayments\(result\.orderPayments\)[\s\S]*setEditorPayments\(payments\)/);
 });
 
 test("active and completed orders share one quiet typography hierarchy", async () => {
