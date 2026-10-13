@@ -31,7 +31,12 @@ CREATE TABLE IF NOT EXISTS order_shipments (
 
 CREATE UNIQUE INDEX IF NOT EXISTS order_shipments_order_batch_idx ON order_shipments(order_id, batch_no);
 --> statement-breakpoint
+CREATE UNIQUE INDEX IF NOT EXISTS order_shipments_id_order_idx ON order_shipments(id, order_id);
+--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS order_shipments_order_sort_idx ON order_shipments(order_id, sort_order, batch_no);
+--> statement-breakpoint
+
+CREATE UNIQUE INDEX IF NOT EXISTS order_items_id_order_idx ON order_items(id, order_id);
 --> statement-breakpoint
 
 CREATE TABLE IF NOT EXISTS order_shipment_items (
@@ -41,56 +46,12 @@ CREATE TABLE IF NOT EXISTS order_shipment_items (
   order_item_id TEXT NOT NULL,
   quantity REAL NOT NULL CHECK (quantity > 0),
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (shipment_id, order_id) REFERENCES order_shipments(id, order_id),
+  FOREIGN KEY (order_item_id, order_id) REFERENCES order_items(id, order_id)
 );
 --> statement-breakpoint
 
 CREATE UNIQUE INDEX IF NOT EXISTS order_shipment_items_shipment_item_idx ON order_shipment_items(shipment_id, order_item_id);
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS order_shipment_items_order_idx ON order_shipment_items(order_id, order_item_id);
---> statement-breakpoint
-
-CREATE TRIGGER IF NOT EXISTS order_shipment_items_validate_insert
-BEFORE INSERT ON order_shipment_items
-BEGIN
-  SELECT CASE
-    WHEN NOT EXISTS (SELECT 1 FROM order_shipments s WHERE s.id = NEW.shipment_id AND s.order_id = NEW.order_id)
-      THEN RAISE(ABORT, 'shipment_order_mismatch')
-    WHEN NOT EXISTS (SELECT 1 FROM order_items i WHERE i.id = NEW.order_item_id AND i.order_id = NEW.order_id)
-      THEN RAISE(ABORT, 'shipment_item_order_mismatch')
-    WHEN COALESCE((SELECT SUM(si.quantity) FROM order_shipment_items si WHERE si.order_item_id = NEW.order_item_id), 0) + NEW.quantity
-      > COALESCE((SELECT i.quantity FROM order_items i WHERE i.id = NEW.order_item_id), 0)
-      THEN RAISE(ABORT, 'shipment_quantity_exceeds_ordered')
-  END;
-END;
---> statement-breakpoint
-
-CREATE TRIGGER IF NOT EXISTS order_shipment_items_validate_update
-BEFORE UPDATE ON order_shipment_items
-BEGIN
-  SELECT CASE
-    WHEN NOT EXISTS (SELECT 1 FROM order_shipments s WHERE s.id = NEW.shipment_id AND s.order_id = NEW.order_id)
-      THEN RAISE(ABORT, 'shipment_order_mismatch')
-    WHEN NOT EXISTS (SELECT 1 FROM order_items i WHERE i.id = NEW.order_item_id AND i.order_id = NEW.order_id)
-      THEN RAISE(ABORT, 'shipment_item_order_mismatch')
-    WHEN COALESCE((SELECT SUM(si.quantity) FROM order_shipment_items si WHERE si.order_item_id = NEW.order_item_id AND si.id <> OLD.id), 0) + NEW.quantity
-      > COALESCE((SELECT i.quantity FROM order_items i WHERE i.id = NEW.order_item_id), 0)
-      THEN RAISE(ABORT, 'shipment_quantity_exceeds_ordered')
-  END;
-END;
---> statement-breakpoint
-
-CREATE TRIGGER IF NOT EXISTS order_items_protect_allocated_update
-BEFORE UPDATE OF quantity ON order_items
-WHEN NEW.quantity < COALESCE((SELECT SUM(si.quantity) FROM order_shipment_items si WHERE si.order_item_id = OLD.id), 0)
-BEGIN
-  SELECT RAISE(ABORT, 'order_item_quantity_below_allocated');
-END;
---> statement-breakpoint
-
-CREATE TRIGGER IF NOT EXISTS order_items_protect_allocated_delete
-BEFORE DELETE ON order_items
-WHEN EXISTS (SELECT 1 FROM order_shipment_items si WHERE si.order_item_id = OLD.id)
-BEGIN
-  SELECT RAISE(ABORT, 'order_item_has_shipment_allocations');
-END;

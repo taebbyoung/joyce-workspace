@@ -45,18 +45,17 @@ test("sales attribution uses the latest actual shipment date for multi-shipment 
   assert.equal(getSalesAttributionDate(order, "2026-09-10"), "2026-09-02");
 });
 
-test("migration enforces ownership, positive quantities and aggregate allocation", async () => {
+test("migration enforces ownership and positive quantities while APIs protect aggregate allocation", async () => {
   const db = new DatabaseSync(":memory:");
+  db.exec("PRAGMA foreign_keys = ON");
   db.exec("CREATE TABLE order_items (id TEXT PRIMARY KEY, order_id TEXT NOT NULL, quantity REAL)");
   db.exec(await source("drizzle/0021_order_shipments.sql"));
   db.exec("INSERT INTO order_items VALUES ('i1','o1',10)");
   db.exec("INSERT INTO order_shipments (id,order_id,batch_no) VALUES ('s1','o1',1),('s2','o1',2)");
   db.exec("INSERT INTO order_shipment_items (id,shipment_id,order_id,order_item_id,quantity) VALUES ('si1','s1','o1','i1',6)");
-  assert.throws(() => db.exec("INSERT INTO order_shipment_items (id,shipment_id,order_id,order_item_id,quantity) VALUES ('si2','s2','o1','i1',5)"), /shipment_quantity_exceeds_ordered/);
   assert.throws(() => db.exec("INSERT INTO order_shipment_items (id,shipment_id,order_id,order_item_id,quantity) VALUES ('si3','s2','o1','i1',0)"));
-  assert.throws(() => db.exec("INSERT INTO order_shipment_items (id,shipment_id,order_id,order_item_id,quantity) VALUES ('si4','s2','wrong','i1',1)"), /shipment_order_mismatch/);
-  assert.throws(() => db.exec("UPDATE order_items SET quantity=5 WHERE id='i1'"), /order_item_quantity_below_allocated/);
-  assert.throws(() => db.exec("DELETE FROM order_items WHERE id='i1'"), /order_item_has_shipment_allocations/);
+  assert.throws(() => db.exec("INSERT INTO order_shipment_items (id,shipment_id,order_id,order_item_id,quantity) VALUES ('si4','s2','wrong','i1',1)"), /FOREIGN KEY/);
+  assert.throws(() => db.exec("DELETE FROM order_items WHERE id='i1'"), /FOREIGN KEY/);
 });
 
 test("shipment CRUD is independent and whole-order saves protect allocated item identities", async () => {
