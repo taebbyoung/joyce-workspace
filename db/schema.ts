@@ -34,6 +34,7 @@ export const customers = sqliteTable("customers", {
   lastContactAt: text("last_contact_at"),
   legacyMetadata: text("legacy_metadata").notNull().default("{}"),
   legacyNotes: text("legacy_notes").notNull().default(""),
+  sourceLeadId: text("source_lead_id"),
   deletedAt: text("deleted_at"),
   ...timestamps,
 });
@@ -136,6 +137,19 @@ export const leadContacts = sqliteTable("lead_contacts", {
   note: text("note"),
   isPrimary: integer("is_primary", { mode: "boolean" }).notNull().default(false),
   decisionMakerFit: text("decision_maker_fit"),
+  ...timestamps,
+});
+
+export const leadDevelopmentHistory = sqliteTable("lead_development_history", {
+  id: text("id").primaryKey(),
+  leadId: text("lead_id").notNull(),
+  developmentAt: text("development_at").notNull(),
+  channel: text("channel").notNull(),
+  direction: text("direction").notNull(),
+  summary: text("summary").notNull(),
+  touchNumber: integer("touch_number"),
+  realReply: integer("real_reply", { mode: "boolean" }).notNull().default(false),
+  outcome: text("outcome"),
   ...timestamps,
 });
 

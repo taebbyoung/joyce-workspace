@@ -37,16 +37,48 @@ export const LEAD_COMPANY_TYPES = [
 ] as const;
 export const LEAD_DECISION_MAKER_FITS = ["High", "Medium", "Low"] as const;
 
+export const LEAD_ACTIVE_STATUSES = [
+  "research_pending",
+  "first_outreach_due",
+  "waiting_reply",
+  "following_up",
+  "replied_pending_conversion",
+] as const;
+
+export const LEAD_DEVELOPMENT_CHANNELS = [
+  "Email",
+  "WhatsApp",
+  "LinkedIn",
+  "Phone",
+  "Video",
+  "Exhibition",
+  "Other",
+] as const;
+
+export const LEAD_DEVELOPMENT_TYPES = ["outbound", "reply", "note"] as const;
+
+// Touch 1 happens on Day 0. Each following interval is based on the actual
+// date of the preceding outbound touch, not the Lead creation date.
+export const LEAD_TOUCH_CADENCE_DAYS = [0, 4, 7, 14, 25, 35, 45, 50] as const;
+
 export const leadStatusLabels: Record<(typeof LEAD_STATUSES)[number], string> = {
   research_pending: "待研究",
   first_outreach_due: "待首次开发",
-  waiting_reply: "已开发待回复",
-  following_up: "跟进中",
+  waiting_reply: "开发中",
+  following_up: "开发中",
   replied_pending_conversion: "已回复·待转 Potential",
   converted: "已转 Potential",
   paused: "暂停",
   abandoned: "放弃",
 };
+
+export function isActiveLeadStatus(value: unknown) {
+  return (LEAD_ACTIVE_STATUSES as readonly string[]).includes(text(value));
+}
+
+export function isDevelopingLeadStatus(value: unknown) {
+  return ["waiting_reply", "following_up"].includes(text(value));
+}
 
 function text(value: unknown) {
   return String(value ?? "").trim();
@@ -83,6 +115,20 @@ export function dateOnly(value: unknown) {
   return parsed.getUTCFullYear() === year && parsed.getUTCMonth() === month - 1 && parsed.getUTCDate() === day
     ? candidate
     : "";
+}
+
+export function addLeadDateDays(value: unknown, days: number) {
+  const date = dateOnly(value);
+  if (!date || !Number.isInteger(days)) return "";
+  const [year, month, day] = date.split("-").map(Number);
+  const next = new Date(Date.UTC(year, month - 1, day + days));
+  return next.toISOString().slice(0, 10);
+}
+
+export function nextLeadTouchDate(actualDate: unknown, completedTouchCount: number) {
+  if (!Number.isInteger(completedTouchCount) || completedTouchCount < 1) return "";
+  const interval = LEAD_TOUCH_CADENCE_DAYS[completedTouchCount];
+  return interval === undefined ? "" : addLeadDateDays(actualDate, interval);
 }
 
 function enumValue<T extends readonly string[]>(value: unknown, allowed: T, fallback = "") {
@@ -124,13 +170,22 @@ export function leadSortKey(row: Record<string, unknown>, today: string) {
   const status = text(row.status);
   const next = dateOnly(row.next_follow_up_date);
   const priority = text(row.priority);
-  const statusRank = status === "replied_pending_conversion"
+  const active = isActiveLeadStatus(status);
+  const statusRank = active && next && next < today
     ? 0
-    : next && next <= today
+    : active && next === today
       ? 1
-      : status === "first_outreach_due"
+      : status === "replied_pending_conversion"
         ? 2
-        : 3;
+        : status === "first_outreach_due"
+          ? 3
+          : active && next
+            ? 4
+            : status === "research_pending"
+              ? 5
+              : active
+                ? 6
+                : 7;
   const priorityRank = priority === "High" ? 0 : priority === "Medium" ? 1 : 2;
   return [statusRank, priorityRank, next || "9999-12-31", text(row.created_at) || "9999-12-31", text(row.id)];
 }

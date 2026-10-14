@@ -84,6 +84,7 @@ const schemaStatements = [
     last_contact_at TEXT,
     legacy_metadata TEXT NOT NULL DEFAULT '{}',
     legacy_notes TEXT NOT NULL DEFAULT '',
+    source_lead_id TEXT,
     deleted_at TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -191,6 +192,21 @@ const schemaStatements = [
   )`,
   `CREATE INDEX IF NOT EXISTS lead_contacts_lead_idx
     ON lead_contacts(lead_id, is_primary, created_at)`,
+  `CREATE TABLE IF NOT EXISTS lead_development_history (
+    id TEXT PRIMARY KEY,
+    lead_id TEXT NOT NULL,
+    development_at TEXT NOT NULL,
+    channel TEXT NOT NULL,
+    direction TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    touch_number INTEGER,
+    real_reply INTEGER NOT NULL DEFAULT 0,
+    outcome TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  )`,
+  `CREATE INDEX IF NOT EXISTS lead_development_history_lead_time_idx
+    ON lead_development_history(lead_id, development_at DESC, created_at DESC)`,
   `CREATE TABLE IF NOT EXISTS customer_status_history (
     id TEXT PRIMARY KEY,
     customer_id TEXT NOT NULL,

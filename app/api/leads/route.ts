@@ -3,12 +3,18 @@ import {
   EDITABLE_LEAD_STATUSES,
   LEAD_COMPANY_TYPES,
   LEAD_DECISION_MAKER_FITS,
+  LEAD_DEVELOPMENT_CHANNELS,
+  LEAD_DEVELOPMENT_TYPES,
   LEAD_MARKET_FITS,
   LEAD_MOTO_EV_BUSINESSES,
   LEAD_PRIORITIES,
   LEAD_SOURCES,
+  dateOnly,
   leadPayload,
+  nextLeadTouchDate,
+  normalizeLeadName,
   sortLeads,
+  websiteDomain,
 } from "@/lib/business-development";
 
 export const runtime = "edge";
@@ -54,15 +60,19 @@ async function audit(action: string, entityId: string, before: unknown, after: u
 
 async function leadSnapshot(leadId: string) {
   const db = getD1();
-  const [lead, contacts] = await Promise.all([
+  const [lead, contacts, history] = await Promise.all([
     db.prepare("SELECT * FROM business_development_leads WHERE id = ?")
       .bind(leadId).first<Row>(),
     db.prepare(
       `SELECT * FROM lead_contacts WHERE lead_id = ?
        ORDER BY is_primary DESC, created_at, id`,
     ).bind(leadId).all<Row>(),
+    db.prepare(
+      `SELECT * FROM lead_development_history WHERE lead_id = ?
+       ORDER BY development_at DESC, created_at DESC, id DESC`,
+    ).bind(leadId).all<Row>(),
   ]);
-  return { lead, contacts: contacts.results };
+  return { lead, contacts: contacts.results, history: history.results };
 }
 
 function allowed(value: string, values: readonly string[]) {
@@ -107,6 +117,33 @@ function contactPayload(value: Row) {
   };
 }
 
+async function leadTouchCount(leadId: string) {
+  const row = await getD1().prepare(
+    `SELECT COUNT(*) AS count FROM lead_development_history
+     WHERE lead_id = ? AND direction = 'outbound'`,
+  ).bind(leadId).first<{ count: number }>();
+  return Number(row?.count || 0);
+}
+
+async function conversionDuplicates(lead: Row) {
+  const customers = await getD1().prepare(
+    `SELECT id, company, country, website FROM customers
+     WHERE deleted_at IS NULL`,
+  ).all<Row>();
+  const leadDomain = websiteDomain(lead.website);
+  const leadName = String(lead.normalized_name || "");
+  const leadCountry = String(lead.country || "").trim().toLowerCase();
+  return customers.results.filter((customer) => {
+    const sameDomain = Boolean(leadDomain && websiteDomain(customer.website) === leadDomain);
+    const sameNameCountry = Boolean(
+      leadName && leadCountry &&
+      normalizeLeadName(customer.company) === leadName &&
+      String(customer.country || "").trim().toLowerCase() === leadCountry,
+    );
+    return sameDomain || sameNameCountry;
+  }).map((customer) => ({ id: customer.id, company: customer.company }));
+}
+
 export async function GET(request: Request) {
   await ensureWorkspace();
   const url = new URL(request.url);
@@ -122,13 +159,26 @@ export async function GET(request: Request) {
     `SELECT l.*, c.id AS primary_contact_id, c.name AS primary_contact_name,
             c.title AS primary_contact_title, c.email AS primary_contact_email,
             c.linkedin AS primary_contact_linkedin, c.whatsapp AS primary_contact_whatsapp,
-            c.wechat AS primary_contact_wechat
+            c.wechat AS primary_contact_wechat,
+            COALESCE(h.touch_count, 0) AS touch_count,
+            h.last_development_date,
+            (SELECT channel FROM lead_development_history recent
+             WHERE recent.lead_id = l.id
+             ORDER BY recent.development_at DESC, recent.created_at DESC, recent.id DESC
+             LIMIT 1) AS last_development_channel
      FROM business_development_leads l
      LEFT JOIN lead_contacts c ON c.id = (
        SELECT id FROM lead_contacts
        WHERE lead_id = l.id
        ORDER BY is_primary DESC, created_at, id LIMIT 1
-     )`,
+     )
+     LEFT JOIN (
+       SELECT lead_id,
+              SUM(CASE WHEN direction = 'outbound' THEN 1 ELSE 0 END) AS touch_count,
+              MAX(development_at) AS last_development_date
+       FROM lead_development_history
+       GROUP BY lead_id
+     ) h ON h.lead_id = l.id`,
   ).all<Row>();
   const query = text(url.searchParams.get("query"), 300).toLowerCase();
   const status = text(url.searchParams.get("status"), 50);
@@ -138,7 +188,7 @@ export async function GET(request: Request) {
   const motoEvBusiness = text(url.searchParams.get("moto_ev_business"), 20);
   const targetModel = text(url.searchParams.get("target_model"), 100).toLowerCase();
   const filtered = rows.results.filter((lead) => {
-    const haystack = [lead.company_name, lead.website, lead.website_domain, lead.primary_contact_name, lead.primary_contact_email]
+    const haystack = [lead.company_name, lead.country, lead.website, lead.website_domain, lead.primary_contact_name, lead.primary_contact_email]
       .join(" ").toLowerCase();
     return (!query || haystack.includes(query)) &&
       (!status || lead.status === status) &&
@@ -201,7 +251,11 @@ export async function POST(request: Request) {
     if (action === "update") {
       const validationError = leadValidationError(body);
       if (validationError) return errorResponse(validationError);
-      const payload = leadPayload(body);
+      const payload = leadPayload({
+        ...body,
+        status: body.status ?? before.status,
+        nextFollowUpDate: body.nextFollowUpDate ?? before.next_follow_up_date,
+      });
       if (!payload.companyName) return errorResponse("请填写公司名称。");
       if (!payload.country) return errorResponse("请填写国家。");
       await db.prepare(
@@ -226,6 +280,176 @@ export async function POST(request: Request) {
       return Response.json(await leadSnapshot(leadId));
     }
 
+    if (action === "research_complete") {
+      if (before.status !== "research_pending") return errorResponse("当前 Lead 已完成研究。", 409);
+      await db.batch([
+        db.prepare(
+          `UPDATE business_development_leads
+           SET status = 'first_outreach_due', updated_at = ? WHERE id = ?`,
+        ).bind(now, leadId),
+        db.prepare(
+          `INSERT INTO audit_logs
+            (id, action, entity_type, entity_id, before_data, after_data, source)
+           VALUES (?, 'lead_research_completed', 'business_development_lead', ?, ?, ?, 'user')`,
+        ).bind(
+          crypto.randomUUID(), leadId, JSON.stringify(before),
+          JSON.stringify({ status: "first_outreach_due" }),
+        ),
+      ]);
+      return Response.json(await leadSnapshot(leadId));
+    }
+
+    if (action === "set_next_date") {
+      const nextDate = dateOnly(body.nextFollowUpDate);
+      if (body.nextFollowUpDate && !nextDate) return errorResponse("下次开发日期无效。");
+      await db.prepare(
+        `UPDATE business_development_leads
+         SET next_follow_up_date = ?, updated_at = ? WHERE id = ?`,
+      ).bind(nextDate || null, now, leadId).run();
+      await audit("lead_next_development_updated", leadId, before, { nextFollowUpDate: nextDate || null });
+      return Response.json(await leadSnapshot(leadId));
+    }
+
+    if (action === "set_status") {
+      const requested = text(body.status, 40);
+      let nextStatus = requested;
+      if (requested === "resume") {
+        nextStatus = await leadTouchCount(leadId) > 0 ? "following_up" : "research_pending";
+      }
+      if (!["paused", "abandoned", "research_pending", "first_outreach_due", "following_up"].includes(nextStatus)) {
+        return errorResponse("Lead 状态变更无效。");
+      }
+      await db.prepare(
+        `UPDATE business_development_leads SET status = ?, updated_at = ? WHERE id = ?`,
+      ).bind(nextStatus, now, leadId).run();
+      await audit("lead_status_updated", leadId, before, { status: nextStatus });
+      return Response.json(await leadSnapshot(leadId));
+    }
+
+    if (action === "save_development") {
+      const developmentAt = dateOnly(body.developmentAt);
+      const channel = text(body.channel, 30);
+      const direction = text(body.direction, 20);
+      const summary = text(body.summary, 8000);
+      if (!developmentAt) return errorResponse("请选择开发日期。");
+      if (!allowed(channel, LEAD_DEVELOPMENT_CHANNELS)) return errorResponse("开发渠道无效。");
+      if (!allowed(direction, LEAD_DEVELOPMENT_TYPES)) return errorResponse("开发记录类型无效。");
+      if (!summary) return errorResponse("请填写开发记录。");
+
+      const currentTouches = await leadTouchCount(leadId);
+      const touchNumber = direction === "outbound" ? currentTouches + 1 : null;
+      const realReply = direction === "reply";
+      const nextStatus = realReply
+        ? "replied_pending_conversion"
+        : direction === "outbound" && before.status !== "replied_pending_conversion"
+          ? "following_up"
+          : String(before.status || "research_pending");
+      const nextDate = realReply
+        ? null
+        : direction === "outbound"
+          ? nextLeadTouchDate(developmentAt, touchNumber || 0) || null
+          : before.next_follow_up_date || null;
+      const historyId = crypto.randomUUID();
+      await db.batch([
+        db.prepare(
+          `INSERT INTO lead_development_history
+            (id, lead_id, development_at, channel, direction, summary, touch_number,
+             real_reply, outcome, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ).bind(
+          historyId, leadId, developmentAt, channel, direction, summary, touchNumber,
+          realReply ? 1 : 0, nullable(body.outcome, 100), now, now,
+        ),
+        db.prepare(
+          `UPDATE business_development_leads
+           SET status = ?, next_follow_up_date = ?, updated_at = ? WHERE id = ?`,
+        ).bind(nextStatus, nextDate, now, leadId),
+        db.prepare(
+          `INSERT INTO audit_logs
+            (id, action, entity_type, entity_id, before_data, after_data, source)
+           VALUES (?, 'lead_development_recorded', 'business_development_lead', ?, ?, ?, 'user')`,
+        ).bind(
+          crypto.randomUUID(), leadId, JSON.stringify(before),
+          JSON.stringify({ historyId, direction, touchNumber, status: nextStatus, nextDate }),
+        ),
+      ]);
+      return Response.json(await leadSnapshot(leadId));
+    }
+
+    if (action === "convert_to_potential") {
+      if (before.status === "converted") return errorResponse("该 Lead 已转为潜在客户。", 409);
+      const duplicates = await conversionDuplicates(before);
+      if (duplicates.length && body.confirmDuplicate !== true) {
+        return Response.json({
+          error: "发现可能重复的客户，请确认后再转换。",
+          code: "possible_duplicate",
+          duplicates,
+        }, { status: 409 });
+      }
+      const [contacts, history] = await Promise.all([
+        db.prepare(`SELECT * FROM lead_contacts WHERE lead_id = ? ORDER BY is_primary DESC, created_at, id`)
+          .bind(leadId).all<Row>(),
+        db.prepare(`SELECT * FROM lead_development_history WHERE lead_id = ? ORDER BY development_at, created_at, id`)
+          .bind(leadId).all<Row>(),
+      ]);
+      const customerId = crypto.randomUUID();
+      const background = [
+        before.why_worth_developing ? `主营 / 公司情况\n${before.why_worth_developing}` : "",
+        before.existing_brands ? `现有品牌\n${before.existing_brands}` : "",
+        before.relevant_products ? `相关产品\n${before.relevant_products}` : "",
+        before.risk_doubt ? `备注\n${before.risk_doubt}` : "",
+      ].filter(Boolean).join("\n\n");
+      const statements = [
+        db.prepare(
+          `INSERT INTO customers
+            (id, customer_code, company, lifecycle, grade, country, city, website,
+             source, next_action, company_background_notes, source_lead_id,
+             created_at, updated_at)
+           VALUES (?, NULL, ?, 'potential_customer', NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ).bind(
+          customerId, before.company_name, nullable(before.country, 100), nullable(before.city, 100),
+          nullable(before.website, 500), nullable(before.source, 300), nullable(before.next_step, 5000),
+          background || null, leadId, now, now,
+        ),
+        ...contacts.results.map((contact) => db.prepare(
+          `INSERT INTO contacts
+            (id, customer_id, name, position, role, email, phone, whatsapp, wechat,
+             linkedin, notes, is_primary, deleted_at, legacy_metadata, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, '{}', ?, ?)`,
+        ).bind(
+          crypto.randomUUID(), customerId, contact.name, contact.title, contact.title,
+          contact.email, contact.phone, contact.whatsapp, contact.wechat, contact.linkedin,
+          contact.note, Number(contact.is_primary || 0), now, now,
+        )),
+        ...history.results.map((entry) => db.prepare(
+          `INSERT INTO customer_follow_ups
+            (id, customer_id, follow_up_at, content, next_follow_up_date, channel, created_at, updated_at)
+           VALUES (?, ?, ?, ?, NULL, ?, ?, ?)`,
+        ).bind(
+          crypto.randomUUID(), customerId, entry.development_at, entry.summary,
+          entry.channel, now, now,
+        )),
+        db.prepare(
+          `INSERT INTO customer_status_history
+            (id, customer_id, to_status, reason, source, created_at)
+           VALUES (?, ?, 'potential_customer', 'Converted from Lead', 'user', ?)`,
+        ).bind(crypto.randomUUID(), customerId, now),
+        db.prepare(
+          `UPDATE business_development_leads
+           SET status = 'converted', updated_at = ? WHERE id = ?`,
+        ).bind(now, leadId),
+        db.prepare(
+          `INSERT INTO audit_logs
+            (id, action, entity_type, entity_id, before_data, after_data, source)
+           VALUES (?, 'lead_converted_to_potential', 'business_development_lead', ?, ?, ?, 'user')`,
+        ).bind(
+          crypto.randomUUID(), leadId, JSON.stringify(before), JSON.stringify({ customerId }),
+        ),
+      ];
+      await db.batch(statements);
+      return Response.json({ ...(await leadSnapshot(leadId)), customerId });
+    }
+
     if (action === "save_contact") {
       const contactId = text(body.contactId, 100) || crypto.randomUUID();
       const decisionMakerFit = text(body.decisionMakerFit, 20);
@@ -233,8 +457,18 @@ export async function POST(request: Request) {
         return errorResponse("Decision Maker Fit 无效。");
       }
       const contact = contactPayload(body);
+      if (contact.email) {
+        const duplicateEmail = await db.prepare(
+          `SELECT id FROM lead_contacts
+           WHERE lead_id = ? AND lower(trim(email)) = lower(trim(?)) AND id <> ? LIMIT 1`,
+        ).bind(leadId, contact.email, contactId).first<Row>();
+        if (duplicateEmail) return errorResponse("该 Lead 已有相同 Email 的联系人。", 409);
+      }
       const existing = await db.prepare("SELECT * FROM lead_contacts WHERE id = ? AND lead_id = ?")
         .bind(contactId, leadId).first<Row>();
+      if (body.decisionMakerFit === undefined && existing) {
+        contact.decisionMakerFit = text(existing.decision_maker_fit, 20);
+      }
       const belongsToAnotherLead = await db.prepare(
         "SELECT id FROM lead_contacts WHERE id = ? AND lead_id <> ?",
       ).bind(contactId, leadId).first<Row>();

@@ -86,13 +86,16 @@ import {
 } from "@/lib/order-import-mapping";
 import type { HomeBootstrapData } from "@/lib/home-bootstrap";
 import {
-  EDITABLE_LEAD_STATUSES,
   LEAD_COMPANY_TYPES,
-  LEAD_DECISION_MAKER_FITS,
+  LEAD_DEVELOPMENT_CHANNELS,
   LEAD_MARKET_FITS,
   LEAD_MOTO_EV_BUSINESSES,
   LEAD_PRIORITIES,
   LEAD_SOURCES,
+  LEAD_STATUSES,
+  addLeadDateDays,
+  isActiveLeadStatus,
+  isDevelopingLeadStatus,
   leadStatusLabels,
   sortLeads,
 } from "@/lib/business-development";
@@ -6021,14 +6024,15 @@ function LeadsView({ data }: { data: WorkspaceData }) {
   );
 }
 
-type LeadSnapshot = { lead: Row; contacts: Row[] };
+type LeadSnapshot = { lead: Row; contacts: Row[]; history: Row[] };
 
 const leadQuickViews = [
-  ["all", "全部线索"],
-  ["due", "今天要处理"],
-  ["high", "高优先级"],
-  ["first", "待首次开发"],
-  ["replied", "已回复"],
+  ["all", "全部活跃"],
+  ["today", "今天要开发"],
+  ["overdue", "已逾期"],
+  ["developing", "开发中"],
+  ["replied", "已回复待转换"],
+  ["research", "待研究"],
 ] as const;
 
 const leadPriorityLabels: Record<string, string> = {
@@ -6062,17 +6066,6 @@ const leadSourceLabels: Record<string, string> = {
   Manual: "手动录入 · Manual",
   Other: "其他 · Other",
 };
-const leadDecisionMakerFitLabels = leadPriorityLabels;
-const leadStatusDetailLabels: Record<string, string> = {
-  research_pending: "待研究 · Research Pending",
-  first_outreach_due: "待首次开发 · First Outreach Due",
-  waiting_reply: "已开发待回复 · Waiting Reply",
-  following_up: "跟进中 · Following Up",
-  replied_pending_conversion: "已回复 · 待转 Potential",
-  paused: "暂停 · Paused",
-  abandoned: "放弃 · Abandoned",
-};
-
 function leadDisplayLabel(value: unknown, labels: Record<string, string>, fallback = "未判断") {
   const raw = String(value || "");
   return labels[raw] || raw || fallback;
@@ -6115,23 +6108,16 @@ function LeadContactFields({ contact = {} }: { contact?: Row }) {
   return (
     <>
       <div className="form-grid">
-        <label>姓名（Name）<input name="name" defaultValue={contact.name || ""} /></label>
-        <label>职位（Title）<input name="title" defaultValue={contact.title || ""} /></label>
-        <label>邮箱（Email）<input name="email" type="email" defaultValue={contact.email || ""} /></label>
-        <label>电话（Phone）<input name="phone" defaultValue={contact.phone || ""} /></label>
+        <label>联系人姓名<input name="name" defaultValue={contact.name || ""} /></label>
+        <label>职位<input name="title" defaultValue={contact.title || ""} /></label>
+        <label>Email<input name="email" type="email" defaultValue={contact.email || ""} /></label>
+        <label>电话<input name="phone" defaultValue={contact.phone || ""} /></label>
         <label>WhatsApp<input name="whatsapp" defaultValue={contact.whatsapp || ""} /></label>
-        <label>微信（WeChat）<input name="wechat" defaultValue={contact.wechat || ""} /></label>
+        <label>微信<input name="wechat" defaultValue={contact.wechat || ""} /></label>
         <label>LinkedIn<input name="linkedin" defaultValue={contact.linkedin || ""} /></label>
-        <label>
-          决策人匹配度（Decision Maker Fit）
-          <select name="decisionMakerFit" defaultValue={contact.decision_maker_fit || ""}>
-            <option value="">未判断</option>
-            {LEAD_DECISION_MAKER_FITS.map((value) => <option key={value} value={value}>{leadDisplayLabel(value, leadDecisionMakerFitLabels)}</option>)}
-          </select>
-        </label>
       </div>
-      <label>备注（Note）<textarea name="note" rows={2} defaultValue={contact.note || ""} /></label>
-      <label className="check-label"><input name="isPrimary" type="checkbox" defaultChecked={Boolean(contact.is_primary)} />主联系人（Primary）</label>
+      <label>联系人备注<textarea name="note" rows={2} defaultValue={contact.note || ""} /></label>
+      <label className="check-label"><input name="isPrimary" type="checkbox" defaultChecked={Boolean(contact.is_primary)} />主要联系人</label>
     </>
   );
 }
@@ -6152,11 +6138,18 @@ function LeadDetail({
     priority: "Medium", status: "research_pending",
   };
   const [contacts, setContacts] = useState<Row[]>(snapshot?.contacts || []);
+  const [history, setHistory] = useState<Row[]>(snapshot?.history || []);
+  const [nextDate, setNextDate] = useState(String(lead.next_follow_up_date || "").slice(0, 10));
   const [isSaving, setIsSaving] = useState(false);
   const [isDirty, setIsDirty] = useState(false);
   const [error, setError] = useState("");
   const [newContactOpen, setNewContactOpen] = useState(false);
   const [contactBusy, setContactBusy] = useState("");
+  const [actionBusy, setActionBusy] = useState("");
+  const [developmentOpen, setDevelopmentOpen] = useState(false);
+  const [developmentDraft, setDevelopmentDraft] = useState<Row>({
+    developmentAt: localDateText(new Date()), channel: "Email", direction: "outbound", summary: "",
+  });
   const editorRoot = useRef<HTMLDivElement | null>(null);
   const formRef = useRef<HTMLFormElement | null>(null);
   const initialSignatureRef = useRef("");
@@ -6165,6 +6158,8 @@ function LeadDetail({
     initialSignatureRef.current = leadFormSignature(formRef.current);
     setIsDirty(false);
     setContacts(snapshot?.contacts || []);
+    setHistory(snapshot?.history || []);
+    setNextDate(String(snapshot?.lead?.next_follow_up_date || "").slice(0, 10));
   }, [snapshot, creating]);
 
   const refreshDirty = useCallback(() => {
@@ -6172,7 +6167,7 @@ function LeadDetail({
   }, []);
   const closeGuard = useCustomerCloseGuard({
     isDirty: () => isDirty,
-    isSaving: () => isSaving || Boolean(contactBusy),
+    isSaving: () => isSaving || Boolean(contactBusy) || Boolean(actionBusy),
     onClose,
     onSavingClose: () => setError("正在保存，请稍候。"),
   });
@@ -6192,7 +6187,11 @@ function LeadDetail({
     setIsSaving(true);
     try {
       const result = await request(creating ? "create" : "update", leadFormPayload(event.currentTarget));
-      const next = { lead: result.lead, contacts: Array.isArray(result.contacts) ? result.contacts : [] };
+      const next = {
+        lead: result.lead,
+        contacts: Array.isArray(result.contacts) ? result.contacts : [],
+        history: Array.isArray(result.history) ? result.history : [],
+      };
       initialSignatureRef.current = leadFormSignature(formRef.current);
       setIsDirty(false);
       onSaved(next, creating);
@@ -6216,9 +6215,9 @@ function LeadDetail({
         name: values.get("name"), title: values.get("title"), email: values.get("email"),
         phone: values.get("phone"), whatsapp: values.get("whatsapp"), wechat: values.get("wechat"),
         linkedin: values.get("linkedin"), note: values.get("note"),
-        isPrimary: values.get("isPrimary") === "on", decisionMakerFit: values.get("decisionMakerFit"),
+        isPrimary: values.get("isPrimary") === "on",
       });
-      const next = { lead: result.lead, contacts: Array.isArray(result.contacts) ? result.contacts : [] };
+      const next = { lead: result.lead, contacts: Array.isArray(result.contacts) ? result.contacts : [], history };
       setContacts(next.contacts);
       setNewContactOpen(false);
       onSaved(next, false);
@@ -6235,7 +6234,7 @@ function LeadDetail({
     setError("");
     try {
       const result = await request("delete_contact", { contactId });
-      const next = { lead: result.lead, contacts: Array.isArray(result.contacts) ? result.contacts : [] };
+      const next = { lead: result.lead, contacts: Array.isArray(result.contacts) ? result.contacts : [], history };
       setContacts(next.contacts);
       onSaved(next, false);
     } catch (deleteError) {
@@ -6245,13 +6244,105 @@ function LeadDetail({
     }
   }
 
+  function snapshotFromResult(result: Row): LeadSnapshot {
+    return {
+      lead: result.lead,
+      contacts: Array.isArray(result.contacts) ? result.contacts : [],
+      history: Array.isArray(result.history) ? result.history : [],
+    };
+  }
+
+  async function saveNextDate(value: string) {
+    if (creating || actionBusy) return;
+    const previous = nextDate;
+    setNextDate(value);
+    setActionBusy("next-date");
+    setError("");
+    try {
+      const next = snapshotFromResult(await request("set_next_date", { nextFollowUpDate: value }));
+      setNextDate(String(next.lead.next_follow_up_date || "").slice(0, 10));
+      onSaved(next, false);
+    } catch (saveError) {
+      setNextDate(previous);
+      setError(saveError instanceof Error ? saveError.message : "下次开发日期保存失败，请重试");
+    } finally {
+      setActionBusy("");
+    }
+  }
+
+  async function runLeadAction(action: string, payload: Row = {}) {
+    if (creating || actionBusy) return;
+    setActionBusy(action);
+    setError("");
+    try {
+      const next = snapshotFromResult(await request(action, payload));
+      setHistory(next.history);
+      setNextDate(String(next.lead.next_follow_up_date || "").slice(0, 10));
+      onSaved(next, false);
+    } catch (actionError) {
+      setError(actionError instanceof Error ? actionError.message : "操作失败，请重试。");
+    } finally {
+      setActionBusy("");
+    }
+  }
+
+  async function saveDevelopment() {
+    if (creating || actionBusy) return;
+    setActionBusy("development");
+    setError("");
+    try {
+      const next = snapshotFromResult(await request("save_development", developmentDraft));
+      setHistory(next.history);
+      setNextDate(String(next.lead.next_follow_up_date || "").slice(0, 10));
+      setDevelopmentDraft({
+        developmentAt: localDateText(new Date()), channel: "Email", direction: "outbound", summary: "",
+      });
+      setDevelopmentOpen(false);
+      onSaved(next, false);
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : "开发记录保存失败，请重试。");
+    } finally {
+      setActionBusy("");
+    }
+  }
+
+  async function convertToPotential(confirmDuplicate = false) {
+    if (creating || actionBusy) return;
+    setActionBusy("convert");
+    setError("");
+    try {
+      const response = await fetch("/api/leads", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "convert_to_potential", leadId: lead.id, confirmDuplicate }),
+      });
+      const result = await response.json();
+      if (!response.ok && result.code === "possible_duplicate") {
+        const names = Array.isArray(result.duplicates)
+          ? result.duplicates.map((item: Row) => item.company).filter(Boolean).join("、")
+          : "现有客户";
+        if (window.confirm(`发现可能重复的客户：${names}。仍要转为潜在客户吗？`)) {
+          setActionBusy("");
+          await convertToPotential(true);
+        }
+        return;
+      }
+      if (!response.ok) throw new Error(result.error || "转换失败，请重试。");
+      onSaved(snapshotFromResult(result), false);
+    } catch (convertError) {
+      setError(convertError instanceof Error ? convertError.message : "转换失败，请重试。");
+    } finally {
+      setActionBusy("");
+    }
+  }
+
   const contactsSection = !creating ? (
-    <section className="editor-section">
-      <div className="editor-heading"><div><span>CONTACTS</span><h3>联系人（Contacts）</h3></div><small>独立于客户联系人</small></div>
+    <section className="editor-section lead-contacts-section">
+      <div className="editor-heading"><div><span>CONTACTS</span><h3>联系人</h3></div><small>{contacts.length} 位</small></div>
       <div className="contact-editors">
         {contacts.map((contact) => (
           <details className="contact-editor" key={String(contact.id)}>
-            <summary><span><strong>{contact.name || "未命名联系人"}</strong><small>{contact.title || "未填写职位"}{contact.decision_maker_fit ? ` · ${leadDisplayLabel(contact.decision_maker_fit, leadDecisionMakerFitLabels)}` : ""}</small></span></summary>
+            <summary><span><strong>{contact.name || "未命名联系人"}</strong><small>{contact.title || "未填写职位"}</small></span></summary>
             <form onSubmit={(event) => void saveContact(event, String(contact.id))}><LeadContactFields contact={contact} /><div className="dialog-actions"><button className="danger-button" type="button" disabled={Boolean(contactBusy)} onClick={() => void deleteContact(String(contact.id))}>删除</button><button className="primary-button" type="submit" disabled={Boolean(contactBusy)}>{contactBusy === String(contact.id) ? "保存中…" : "保存联系人"}</button></div></form>
           </details>
         ))}
@@ -6261,61 +6352,92 @@ function LeadDetail({
     </section>
   ) : null;
 
+  const touchCount = history.filter((entry) => entry.direction === "outbound").length;
+  const latestDevelopment = history[0];
+  const inactive = ["converted", "paused", "abandoned"].includes(String(lead.status || ""));
+  const today = localDateText(new Date());
+
   return (
-    <Modal open title={creating ? "新增 Lead" : "Lead 详情"} onClose={closeGuard.requestClose} viewportFixed bodyRef={editorRoot}>
+    <Modal open title={creating ? "新增 Lead" : "Lead 详情"} onClose={closeGuard.requestClose} viewportFixed bodyRef={editorRoot} hideHeader>
       <div className="lead-editor" ref={editorRoot}>
         <form ref={formRef} className="lead-editor-form" onSubmit={saveLead} onInput={refreshDirty} onChange={refreshDirty}>
           <div className="customer-editor-toolbar">
             <div>
               <strong>{creating ? "新增 Lead" : String(lead.company_name || "线索详情")}</strong>
-              <small>{isDirty ? "有未保存的修改" : creating ? "填写基础资料后保存" : [lead.country, leadDisplayLabel(lead.company_type, leadCompanyTypeLabels), lead.website_domain || lead.website].filter((value) => value && value !== "未判断").join(" · ") || "所有修改已保存"}</small>
+              <small>{isDirty ? "有未保存的修改" : creating ? "填写基础资料后保存" : `${leadStatusLabel(lead.status)} · Touch ${touchCount}`}</small>
             </div>
             <div className="customer-editor-toolbar-actions">
-              <button type="button" disabled={isSaving || Boolean(contactBusy)} onClick={closeGuard.requestClose}>关闭</button>
-              <button className="primary-button" type="submit" disabled={isSaving || Boolean(contactBusy)}>{isSaving ? "保存中…" : "保存"}</button>
+              <button type="button" disabled={isSaving || Boolean(contactBusy) || Boolean(actionBusy)} onClick={closeGuard.requestClose}>关闭</button>
+              <button className="primary-button" type="submit" disabled={isSaving || Boolean(contactBusy) || Boolean(actionBusy)}>{isSaving ? "保存中…" : "保存"}</button>
             </div>
           </div>
           {error ? <p className="inline-warning" role="alert">{error}</p> : null}
-          <div className="lead-editor-columns">
             <div className="lead-editor-main">
               <section className="editor-section">
-                <div className="editor-heading"><div><span>COMPANY SNAPSHOT</span><h3>公司概况（Company Snapshot）</h3></div></div>
+                <div className="editor-heading"><div><span>LEAD</span><h3>基本信息</h3></div></div>
                 <div className="form-grid">
-                  <label>公司名称（Company Name）<input name="companyName" required defaultValue={lead.company_name || ""} /></label>
-                  <label>国家（Country）<input name="country" required defaultValue={lead.country || ""} /></label>
-                  <label>城市（City）<input name="city" defaultValue={lead.city || ""} /></label>
-                  <label>官网（Website）<input name="website" type="url" defaultValue={lead.website || ""} /></label>
-                  <label>公司 LinkedIn（LinkedIn Company）<input name="linkedinCompany" defaultValue={lead.linkedin_company || ""} /></label>
-                  <label>来源（Source）<select name="source" defaultValue={lead.source || "Manual"}>{LEAD_SOURCES.map((value) => <option key={value} value={value}>{leadDisplayLabel(value, leadSourceLabels)}</option>)}</select></label>
-                  <label>公司类型（Company Type）<select name="companyType" defaultValue={lead.company_type || ""}><option value="">未判断</option>{LEAD_COMPANY_TYPES.map((value) => <option key={value} value={value}>{leadDisplayLabel(value, leadCompanyTypeLabels)}</option>)}</select></label>
+                  <label>公司名称<input name="companyName" required defaultValue={lead.company_name || ""} /></label>
+                  <label>国家<input name="country" required defaultValue={lead.country || ""} /></label>
+                  <label>城市<input name="city" defaultValue={lead.city || ""} /></label>
+                  <label>网站<input name="website" type="url" defaultValue={lead.website || ""} /></label>
+                  <label>公司 LinkedIn<input name="linkedinCompany" defaultValue={lead.linkedin_company || ""} /></label>
+                  <label>来源<select name="source" defaultValue={lead.source || "Manual"}>{LEAD_SOURCES.map((value) => <option key={value} value={value}>{leadDisplayLabel(value, leadSourceLabels)}</option>)}</select></label>
+                  <label>公司类型<select name="companyType" defaultValue={lead.company_type || ""}><option value="">未判断</option>{LEAD_COMPANY_TYPES.map((value) => <option key={value} value={value}>{leadDisplayLabel(value, leadCompanyTypeLabels)}</option>)}</select></label>
                 </div>
                 <p className="form-note">来源（Source）不决定客户生命周期；是否发生真实互动才决定 Lead 或 Potential。</p>
               </section>
               <section className="editor-section">
-                <div className="editor-heading"><div><span>QUALIFICATION</span><h3>客户匹配判断（Qualification）</h3></div></div>
+                <div className="editor-heading"><div><span>DEVELOPMENT JUDGMENT</span><h3>开发判断</h3></div></div>
                 <div className="form-grid">
-                  <label>摩托车 / EV 业务（Motorcycle / EV Business）<select name="motoEvBusiness" defaultValue={lead.moto_ev_business || "Unknown"}>{LEAD_MOTO_EV_BUSINESSES.map((value) => <option key={value} value={value}>{leadDisplayLabel(value, leadMotoEvBusinessLabels)}</option>)}</select></label>
-                  <label>市场匹配度（Market Fit）<select name="marketFit" defaultValue={lead.market_fit || ""}><option value="">未判断</option>{LEAD_MARKET_FITS.map((value) => <option key={value} value={value}>{leadDisplayLabel(value, leadMarketFitLabels)}</option>)}</select></label>
-                  <label>优先级（Priority）<select name="priority" defaultValue={lead.priority || "Medium"}>{LEAD_PRIORITIES.map((value) => <option key={value} value={value}>{leadDisplayLabel(value, leadPriorityLabels)}</option>)}</select></label>
+                  <label>优先级 Priority<select name="priority" defaultValue={lead.priority || "Medium"}>{LEAD_PRIORITIES.map((value) => <option key={value} value={value}>{leadDisplayLabel(value, leadPriorityLabels)}</option>)}</select></label>
+                  <label>市场匹配 Market Fit<select name="marketFit" defaultValue={lead.market_fit || ""}><option value="">未判断</option>{LEAD_MARKET_FITS.map((value) => <option key={value} value={value}>{leadDisplayLabel(value, leadMarketFitLabels)}</option>)}</select></label>
+                  <label>Moto / EV<select name="motoEvBusiness" defaultValue={lead.moto_ev_business || "Unknown"}>{LEAD_MOTO_EV_BUSINESSES.map((value) => <option key={value} value={value}>{leadDisplayLabel(value, leadMotoEvBusinessLabels)}</option>)}</select></label>
                 </div>
-                <label>现有品牌（Existing Brands）<textarea name="existingBrands" rows={2} defaultValue={lead.existing_brands || ""} /></label>
-                <label>相关产品（Relevant Products）<textarea name="relevantProducts" rows={2} defaultValue={lead.relevant_products || ""} /></label>
-                <label>目标车型（Target Models）<textarea name="targetModels" rows={2} defaultValue={lead.target_models || ""} /></label>
-                <label>为什么值得开发（Why Worth Developing）<textarea name="whyWorthDeveloping" rows={4} defaultValue={lead.why_worth_developing || ""} /></label>
-                <label>风险 / 疑点（Risk / Doubt）<textarea name="riskDoubt" rows={4} defaultValue={lead.risk_doubt || ""} /></label>
+                <label>现有品牌<textarea name="existingBrands" rows={2} defaultValue={lead.existing_brands || ""} /></label>
+                <label>相关产品<textarea name="relevantProducts" rows={2} defaultValue={lead.relevant_products || ""} /></label>
+                <label>目标车型<textarea name="targetModels" rows={2} defaultValue={lead.target_models || ""} /></label>
+                <label>主营 / 公司情况<textarea name="whyWorthDeveloping" rows={4} defaultValue={lead.why_worth_developing || ""} /></label>
+                <label>备注<textarea name="riskDoubt" rows={4} defaultValue={lead.risk_doubt || ""} /></label>
+                <label>下一步<textarea name="nextStep" rows={3} defaultValue={lead.next_step || ""} /></label>
               </section>
             </div>
-            <aside className="lead-editor-control">
-              <section className="editor-section">
-                <div className="editor-heading"><div><span>DEVELOPMENT CONTROL</span><h3>开发控制（Development Control）</h3></div></div>
-                <label>状态（Status）<select name="status" defaultValue={lead.status || "research_pending"}>{EDITABLE_LEAD_STATUSES.map((value) => <option key={value} value={value}>{leadStatusDetailLabels[value] || leadStatusLabels[value]}</option>)}</select></label>
-                <label>下次跟进（Next Follow-up）<DateInput name="nextFollowUpDate" defaultValue={String(lead.next_follow_up_date || "").slice(0, 10)} /></label>
-                <label>下一步（Next Step）<textarea name="nextStep" rows={5} defaultValue={lead.next_step || ""} /></label>
-              </section>
-            </aside>
-          </div>
         </form>
-        {contactsSection}
+            <aside className="lead-editor-control">
+              {creating ? <section className="editor-section"><p className="muted-copy">保存 Lead 后即可添加联系人、安排下次开发并记录开发历史。</p></section> : <>
+                <div className="lead-development-summary">
+                  <section><span>最近开发</span><strong>{latestDevelopment ? `${formatDate(latestDevelopment.development_at)} · ${latestDevelopment.channel}` : "—"}</strong></section>
+                  <section className="lead-next-development"><span>下次开发</span><DateInput name="nextFollowUpDate" value={nextDate} disabled={Boolean(actionBusy) || inactive} onChange={(event) => void saveNextDate(event.target.value)} /><div className="lead-next-shortcuts">{[4, 7, 14, 25].map((days) => <button type="button" key={days} disabled={Boolean(actionBusy) || inactive} onClick={() => void saveNextDate(addLeadDateDays(today, days))}>+{days}天</button>)}</div><small>{actionBusy === "next-date" ? "正在保存…" : nextDate ? "已保存" : "未安排下一次开发"}</small></section>
+                </div>
+                <section className="editor-section lead-status-card">
+                  <div className="editor-heading"><div><span>STATUS</span><h3>{leadStatusLabel(lead.status)} · Touch {touchCount}</h3></div></div>
+                  <div className="lead-status-actions">
+                    {lead.status === "research_pending" ? <button type="button" onClick={() => void runLeadAction("research_complete")}>研究完成</button> : null}
+                    {lead.status === "replied_pending_conversion" ? <button className="primary-button" type="button" onClick={() => void convertToPotential()}>转为潜在客户</button> : null}
+                    {!inactive ? <><button type="button" onClick={() => void runLeadAction("set_status", { status: "paused" })}>暂停</button><button type="button" onClick={() => void runLeadAction("set_status", { status: "abandoned" })}>放弃</button></> : null}
+                    {["paused", "abandoned"].includes(String(lead.status)) ? <button type="button" onClick={() => void runLeadAction("set_status", { status: "resume" })}>重新启用</button> : null}
+                  </div>
+                  {touchCount >= 8 && lead.status !== "replied_pending_conversion" ? <p className="form-note">默认开发周期已完成；仍可手动安排并继续记录 Touch {touchCount + 1}。</p> : null}
+                </section>
+              </>}
+              {contactsSection}
+              {!creating ? <section className="editor-section lead-development-history">
+                <div className="editor-heading"><div><span>DEVELOPMENT HISTORY</span><h3>开发历史</h3></div><small>{history.length} 条</small></div>
+                <button className="add-contact-button" type="button" disabled={Boolean(actionBusy) || lead.status === "converted"} onClick={() => setDevelopmentOpen((current) => !current)}>+ 记录开发</button>
+                {developmentOpen ? <div className="lead-development-form">
+                  <div className="form-grid">
+                    <label>日期<DateInput value={String(developmentDraft.developmentAt || "")} onChange={(event) => setDevelopmentDraft((current) => ({ ...current, developmentAt: event.target.value }))} /></label>
+                    <label>渠道<select value={String(developmentDraft.channel || "Email")} onChange={(event) => setDevelopmentDraft((current) => ({ ...current, channel: event.target.value }))}>{LEAD_DEVELOPMENT_CHANNELS.map((channel) => <option key={channel}>{channel}</option>)}</select></label>
+                  </div>
+                  <label>记录类型<select value={String(developmentDraft.direction || "outbound")} onChange={(event) => setDevelopmentDraft((current) => ({ ...current, direction: event.target.value }))}><option value="outbound">我方开发（计入 Touch）</option><option value="reply">客户真实回复</option><option value="note">其他记录 / 自动回复（不计 Touch）</option></select></label>
+                  <label>内容<textarea rows={3} value={String(developmentDraft.summary || "")} onChange={(event) => setDevelopmentDraft((current) => ({ ...current, summary: event.target.value }))} /></label>
+                  <div className="dialog-actions"><button type="button" onClick={() => setDevelopmentOpen(false)}>取消</button><button className="primary-button" type="button" disabled={actionBusy === "development" || !String(developmentDraft.summary || "").trim()} onClick={() => void saveDevelopment()}>{actionBusy === "development" ? "保存中…" : "保存记录"}</button></div>
+                </div> : null}
+                <div className="lead-development-list">
+                  {history.map((entry) => <article key={String(entry.id)}><strong>{formatDate(entry.development_at)} · {entry.channel}{entry.touch_number ? ` · Touch ${entry.touch_number}` : entry.real_reply ? " · 客户回复" : ""}</strong><p>{entry.summary}</p></article>)}
+                  {!history.length ? <p className="muted-copy">还没有开发记录。</p> : null}
+                </div>
+              </section> : null}
+            </aside>
       </div>
       <CustomerUnsavedChangesDialog open={closeGuard.closeConfirmOpen} editorRoot={editorRoot} onContinue={closeGuard.continueEditing} onDiscard={closeGuard.discardChanges} />
     </Modal>
@@ -6332,8 +6454,8 @@ function BusinessDevelopmentView() {
   const [priority, setPriority] = useState("all");
   const [country, setCountry] = useState("all");
   const [source, setSource] = useState("all");
+  const [marketFit, setMarketFit] = useState("all");
   const [motoEvBusiness, setMotoEvBusiness] = useState("all");
-  const [targetModel, setTargetModel] = useState("");
   const [selected, setSelected] = useState<LeadSnapshot | null>(null);
   const [creating, setCreating] = useState(false);
   const today = localDateText(new Date());
@@ -6354,36 +6476,66 @@ function BusinessDevelopmentView() {
   useEffect(() => { void loadLeads(); }, [loadLeads]);
 
   const countries = useMemo(() => [...new Set(leads.map((lead) => String(lead.country || "")).filter(Boolean))].sort(), [leads]);
+  const quickViewCounts = useMemo(() => ({
+    all: leads.filter((lead) => isActiveLeadStatus(lead.status)).length,
+    today: leads.filter((lead) => isActiveLeadStatus(lead.status) && String(lead.next_follow_up_date || "").slice(0, 10) === today).length,
+    overdue: leads.filter((lead) => {
+      const next = String(lead.next_follow_up_date || "").slice(0, 10);
+      return Boolean(isActiveLeadStatus(lead.status) && next && next < today);
+    }).length,
+    developing: leads.filter((lead) => isDevelopingLeadStatus(lead.status)).length,
+    replied: leads.filter((lead) => lead.status === "replied_pending_conversion").length,
+    research: leads.filter((lead) => lead.status === "research_pending").length,
+  }), [leads, today]);
   const filtered = useMemo(() => sortLeads(leads.filter((lead) => {
-    const haystack = [lead.company_name, lead.website, lead.website_domain, lead.primary_contact_name, lead.primary_contact_email].join(" ").toLowerCase();
+    const haystack = [lead.company_name, lead.country, lead.website, lead.website_domain, lead.primary_contact_name, lead.primary_contact_email].join(" ").toLowerCase();
     if (query && !haystack.includes(query.toLowerCase())) return false;
     if (status !== "all" && lead.status !== status) return false;
     if (priority !== "all" && lead.priority !== priority) return false;
     if (country !== "all" && lead.country !== country) return false;
     if (source !== "all" && lead.source !== source) return false;
+    if (marketFit !== "all" && lead.market_fit !== marketFit) return false;
     if (motoEvBusiness !== "all" && lead.moto_ev_business !== motoEvBusiness) return false;
-    if (targetModel && !String(lead.target_models || "").toLowerCase().includes(targetModel.toLowerCase())) return false;
     const next = String(lead.next_follow_up_date || "").slice(0, 10);
-    if (quickView === "due" && !(lead.status === "replied_pending_conversion" || (next && next <= today))) return false;
-    if (quickView === "high" && lead.priority !== "High") return false;
-    if (quickView === "first" && lead.status !== "first_outreach_due") return false;
+    const active = isActiveLeadStatus(lead.status);
+    if (status === "all" && quickView === "all" && !active) return false;
+    if (quickView === "today" && !(active && next === today)) return false;
+    if (quickView === "overdue" && !(active && next && next < today)) return false;
+    if (quickView === "developing" && !isDevelopingLeadStatus(lead.status)) return false;
     if (quickView === "replied" && lead.status !== "replied_pending_conversion") return false;
+    if (quickView === "research" && lead.status !== "research_pending") return false;
     return true;
-  }), today), [leads, query, status, priority, country, source, motoEvBusiness, targetModel, quickView, today]);
+  }), today), [leads, query, status, priority, country, source, marketFit, motoEvBusiness, quickView, today]);
 
   async function openLead(leadId: string) {
     try {
       const result = await readApiJson(await fetch(`/api/leads?id=${encodeURIComponent(leadId)}`), "线索打开失败。");
-      setSelected({ lead: result.lead, contacts: Array.isArray(result.contacts) ? result.contacts : [] });
+      setSelected({
+        lead: result.lead,
+        contacts: Array.isArray(result.contacts) ? result.contacts : [],
+        history: Array.isArray(result.history) ? result.history : [],
+      });
     } catch (openError) {
       setError(openError instanceof Error ? openError.message : "线索打开失败。");
     }
   }
 
   function applySaved(snapshot: LeadSnapshot, created: boolean) {
+    const primaryContact = snapshot.contacts.find((contact) => contact.is_primary) || snapshot.contacts[0];
+    const latest = snapshot.history[0];
+    const listLead = {
+      ...snapshot.lead,
+      touch_count: snapshot.history.filter((entry) => entry.direction === "outbound").length,
+      last_development_date: latest?.development_at || null,
+      last_development_channel: latest?.channel || null,
+      primary_contact_name: primaryContact?.name || null,
+      primary_contact_title: primaryContact?.title || null,
+      primary_contact_email: primaryContact?.email || null,
+      primary_contact_linkedin: primaryContact?.linkedin || null,
+    };
     setLeads((current) => sortLeads([
       ...current.filter((lead) => String(lead.id) !== String(snapshot.lead.id)),
-      snapshot.lead,
+      listLead,
     ], today));
     setSelected(snapshot);
     if (created) setCreating(false);
@@ -6393,33 +6545,37 @@ function BusinessDevelopmentView() {
     <div className="view-stack">
       <SectionTitle eyebrow="新客开发" title="线索池（Lead Pool）" action={<button className="primary-button" type="button" onClick={() => setCreating(true)}>+ 新增 Lead</button>} />
       <div className="lead-quick-views" role="tablist" aria-label="Lead 快捷视图">
-        {leadQuickViews.map(([id, label]) => <button key={id} type="button" className={quickView === id ? "active" : ""} onClick={() => setQuickView(id)}>{label}</button>)}
+        {leadQuickViews.map(([id, label]) => <button key={id} type="button" className={quickView === id ? "active" : ""} onClick={() => setQuickView(id)}>{label} ({quickViewCounts[id]})</button>)}
       </div>
       <section className="plain-panel lead-pool-panel">
         <div className="lead-pool-filters">
           <input aria-label="搜索 Lead" placeholder="搜索公司、网站、联系人或邮箱" value={query} onChange={(event) => setQuery(event.target.value)} />
-          <select aria-label="状态" value={status} onChange={(event) => setStatus(event.target.value)}><option value="all">全部状态</option>{EDITABLE_LEAD_STATUSES.map((value) => <option key={value} value={value}>{leadStatusLabel(value)}</option>)}</select>
+          <select aria-label="状态" value={status} onChange={(event) => setStatus(event.target.value)}><option value="all">全部状态</option>{LEAD_STATUSES.map((value) => <option key={value} value={value}>{leadStatusLabel(value)}</option>)}</select>
           <select aria-label="优先级" value={priority} onChange={(event) => setPriority(event.target.value)}><option value="all">全部优先级</option>{LEAD_PRIORITIES.map((value) => <option key={value} value={value}>{leadDisplayLabel(value, leadPriorityLabels)}</option>)}</select>
           <select aria-label="国家" value={country} onChange={(event) => setCountry(event.target.value)}><option value="all">全部国家</option>{countries.map((value) => <option key={value}>{value}</option>)}</select>
           <select aria-label="来源" value={source} onChange={(event) => setSource(event.target.value)}><option value="all">全部来源</option>{LEAD_SOURCES.map((value) => <option key={value} value={value}>{leadDisplayLabel(value, leadSourceLabels)}</option>)}</select>
+          <select aria-label="市场匹配" value={marketFit} onChange={(event) => setMarketFit(event.target.value)}><option value="all">全部市场匹配</option>{LEAD_MARKET_FITS.map((value) => <option key={value} value={value}>{leadDisplayLabel(value, leadMarketFitLabels)}</option>)}</select>
           <select aria-label="摩托车或 EV 业务" value={motoEvBusiness} onChange={(event) => setMotoEvBusiness(event.target.value)}><option value="all">全部摩托车 / EV 业务</option>{LEAD_MOTO_EV_BUSINESSES.map((value) => <option key={value} value={value}>{leadDisplayLabel(value, leadMotoEvBusinessLabels)}</option>)}</select>
-          <input aria-label="目标车型" placeholder="筛选目标车型" value={targetModel} onChange={(event) => setTargetModel(event.target.value)} />
         </div>
         {error ? <p className="inline-warning" role="alert">{error}</p> : null}
         {loading ? <p className="muted-copy">正在加载线索池…</p> : (
           <div className="lead-pool-table">
-            <div className="lead-pool-head"><span>优先级</span><span>公司</span><span>匹配度</span><span>联系人</span><span>状态</span><span>下一步</span><span>来源</span></div>
+            <div className="lead-pool-head"><span>公司</span><span>国家</span><span>状态</span><span>优先级</span><span>最近开发</span><span>下次开发</span><span>Touch</span><span>主要联系人</span></div>
             {filtered.map((lead) => {
               const next = String(lead.next_follow_up_date || "").slice(0, 10);
               const overdue = Boolean(next && next < today);
+              const nextLabel = !next
+                ? lead.status === "first_outreach_due" ? "待安排首次开发" : isDevelopingLeadStatus(lead.status) ? "未安排下一次开发" : "—"
+                : next === today ? "今天" : overdue ? `逾期 ${Math.max(1, Math.round((new Date(`${today}T00:00:00`).getTime() - new Date(`${next}T00:00:00`).getTime()) / 86400000))}天` : formatDate(next);
               return <button className="lead-pool-row" type="button" key={String(lead.id)} onClick={() => void openLead(String(lead.id))}>
-                <span className={`lead-priority ${String(lead.priority || "Medium").toLowerCase()}`}>{leadDisplayLabel(lead.priority, leadPriorityLabels, "中 · Medium")}</span>
-                <span><strong>{lead.company_name}</strong><small>{[lead.country, lead.company_type ? leadDisplayLabel(lead.company_type, leadCompanyTypeLabels) : ""].filter(Boolean).join(" · ") || "—"}</small><small>{lead.website_domain || lead.website || "—"}</small></span>
-                <span><strong>摩托车 / EV：{leadDisplayLabel(lead.moto_ev_business, leadMotoEvBusinessLabels, "未确认 · Unknown")}</strong><small>目标车型：{lead.target_models || "—"}</small>{lead.existing_brands ? <small>品牌：{lead.existing_brands}</small> : null}</span>
-                <span>{lead.primary_contact_name ? <><strong>{lead.primary_contact_name}</strong><small>{lead.primary_contact_title || "—"}</small><small>{lead.primary_contact_email ? "Email ✓" : ""}{lead.primary_contact_email && lead.primary_contact_linkedin ? " · " : ""}{lead.primary_contact_linkedin ? "LinkedIn ✓" : ""}</small></> : <small>暂无联系人</small>}</span>
-                <span><strong>{leadStatusLabel(lead.status)}</strong></span>
-                <span><strong className={overdue ? "lead-overdue" : ""}>{next ? `${overdue ? "逾期 · " : ""}${formatDate(next)}` : "—"}</strong><small>{lead.next_step || "—"}</small></span>
-                <span><small>{leadDisplayLabel(lead.source, leadSourceLabels, "手动录入 · Manual")}</small></span>
+                <span data-label="公司"><strong>{lead.company_name}</strong><small>{lead.website_domain || lead.website || "—"}</small></span>
+                <span data-label="国家"><strong>{lead.country || "—"}</strong></span>
+                <span data-label="状态"><strong>{leadStatusLabel(lead.status)}</strong></span>
+                <span data-label="优先级" className={`lead-priority ${String(lead.priority || "Medium").toLowerCase()}`}>{leadDisplayLabel(lead.priority, leadPriorityLabels, "中")}</span>
+                <span data-label="最近开发"><strong>{lead.last_development_date ? formatDate(lead.last_development_date) : "—"}</strong><small>{lead.last_development_channel || ""}</small></span>
+                <span data-label="下次开发"><strong className={overdue ? "lead-overdue" : ""}>{nextLabel}</strong></span>
+                <span data-label="Touch"><strong>Touch {Number(lead.touch_count || 0)}</strong></span>
+                <span data-label="主要联系人">{lead.primary_contact_name ? <><strong>{lead.primary_contact_name}</strong><small>{lead.primary_contact_title || "—"}</small></> : <small>暂无联系人</small>}</span>
               </button>;
             })}
             {!filtered.length ? <p className="muted-copy">暂无匹配线索<br />可先新增一家公司开始开发。</p> : null}
