@@ -4,6 +4,7 @@ import {
   type WorkPriorityKind,
   type WorkPrioritySection,
 } from "@/lib/work-priority";
+import { getBusinessDate, isValidDateOnly } from "@/lib/workspace-time";
 
 export const runtime = "edge";
 
@@ -22,7 +23,10 @@ export async function POST(request: Request) {
     if (!["today", "upcoming", "projects"].includes(section)) {
       return Response.json({ error: "排序区域无效。" }, { status: 400 });
     }
-    await saveManualWorkOrder(getD1(), kind, section, ids);
+    const businessDate = isValidDateOnly(payload.businessDate)
+      ? String(payload.businessDate)
+      : getBusinessDate();
+    await saveManualWorkOrder(getD1(), kind, section, ids, businessDate);
     return Response.json({ ok: true });
   } catch (error) {
     return Response.json(

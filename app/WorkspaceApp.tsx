@@ -16,6 +16,7 @@ import {
 import { createPortal } from "react-dom";
 import * as XLSX from "xlsx";
 import { DateInput } from "@/app/DateInput";
+import { WorkspaceTimeProvider, useWorkspaceTime } from "@/app/workspace-time";
 import {
   beginAsyncDataLoad,
   createAsyncDataState,
@@ -47,7 +48,6 @@ import { hasLegacyShipmentData, shipmentLabel, summarizeOrderShipments } from "@
 import {
   buildAttributedCustomerContribution,
   buildAttributedSalesTrend,
-  getSalesBusinessDate,
   groupAttributedOrdersByYear,
   getShippingDateState,
   isExpectedShippingInMonth,
@@ -99,6 +99,13 @@ import {
   leadStatusLabels,
   sortLeads,
 } from "@/lib/business-development";
+import {
+  addBusinessDateDays,
+  businessDayDifference,
+  formatTimestampInTimezone,
+  workspaceTimeUrl,
+  type WorkspaceTimezonePreference,
+} from "@/lib/workspace-time";
 
 type Row = Record<string, any>;
 
@@ -377,31 +384,34 @@ function formatDate(value: unknown) {
   return text ? text.slice(0, 10) : "未设置";
 }
 
-function formatCompletedAt(value: unknown, emptyLabel = "完成时间未记录") {
+function formatCompletedAt(
+  value: unknown,
+  businessDate: string,
+  timezone: string,
+  emptyLabel = "完成时间未记录",
+) {
   const text = String(value ?? "");
   if (!text) return emptyLabel;
   const date = new Date(text);
   if (Number.isNaN(date.getTime())) return text;
-  const now = new Date();
-  const yesterday = new Date(now);
-  yesterday.setDate(now.getDate() - 1);
-  const day = localDateText(date);
-  const time = date.toLocaleTimeString("zh-CN", {
+  const day = formatTimestampInTimezone(text, timezone, {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).replaceAll("/", "-");
+  const time = formatTimestampInTimezone(text, timezone, {
     hour: "2-digit",
     minute: "2-digit",
     hour12: false,
   });
-  if (day === localDateText(now)) return `今天 ${time}`;
-  if (day === localDateText(yesterday)) return `昨天 ${time}`;
-  if (date.getFullYear() === now.getFullYear()) {
-    return `${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")} ${time}`;
-  }
+  if (day === businessDate) return `今天 ${time}`;
+  if (day === addBusinessDateDays(businessDate, -1)) return `昨天 ${time}`;
+  if (day.slice(0, 4) === businessDate.slice(0, 4)) return `${day.slice(5)} ${time}`;
   return `${day} ${time}`;
 }
 
-function dailyGreeting() {
-  const iso = new Date().toISOString().slice(0, 10);
-  const hash = [...iso].reduce((total, char) => total + char.charCodeAt(0), 0);
+function dailyGreeting(businessDate: string) {
+  const hash = [...businessDate].reduce((total, char) => total + char.charCodeAt(0), 0);
   return greetings[hash % greetings.length];
 }
 
@@ -657,6 +667,15 @@ function Modal({
 }
 
 export function WorkspaceApp() {
+  return (
+    <WorkspaceTimeProvider>
+      <WorkspaceAppContent />
+    </WorkspaceTimeProvider>
+  );
+}
+
+function WorkspaceAppContent() {
+  const { currentBusinessDate, workspaceTimezone, checkRevision } = useWorkspaceTime();
   const [view, setView] = useState<View>("home");
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [homeState, setHomeState] = useState<AsyncDataState<HomeBootstrapData>>(
@@ -675,6 +694,8 @@ export function WorkspaceApp() {
     request: ReturnType<typeof createWorkspaceBootstrapRequest<HomeBootstrapData>>;
   } | null>(null);
   const homeBootstrapRequestIdRef = useRef(0);
+  const homeHasLoadedRef = useRef(false);
+  const failedBackgroundRefreshDateRef = useRef("");
   const workspaceBootstrapRequestRef = useRef<{
     id: number;
     request: ReturnType<typeof createWorkspaceBootstrapRequest<WorkspaceData>>;
@@ -745,7 +766,9 @@ export function WorkspaceApp() {
   const loadHome = useCallback(async () => {
     homeBootstrapRequestRef.current?.request.abort();
     const requestId = ++homeBootstrapRequestIdRef.current;
-    const request = createWorkspaceBootstrapRequest<HomeBootstrapData>("/api/home");
+    const request = createWorkspaceBootstrapRequest<HomeBootstrapData>(
+      workspaceTimeUrl("/api/home", currentBusinessDate, workspaceTimezone),
+    );
     homeBootstrapRequestRef.current = { id: requestId, request };
     setWorkspaceStartupFailure(null);
     setHomeState((current) => beginAsyncDataLoad(current));
@@ -756,6 +779,7 @@ export function WorkspaceApp() {
         throw new Error("首页响应格式无效，请重试。");
       }
       setHomeState(resolveAsyncData(result));
+      failedBackgroundRefreshDateRef.current = "";
       return true;
     } catch (requestError) {
       if (
@@ -777,13 +801,22 @@ export function WorkspaceApp() {
               : "首页加载失败。",
         ),
       );
+      if (homeHasLoadedRef.current) {
+        failedBackgroundRefreshDateRef.current = currentBusinessDate;
+        setToast("今日数据刷新失败，将在下次回到页面时重试");
+        window.setTimeout(() => setToast(""), 2600);
+      }
       return false;
     } finally {
       if (homeBootstrapRequestRef.current?.id === requestId) {
         homeBootstrapRequestRef.current = null;
       }
     }
-  }, []);
+  }, [currentBusinessDate, workspaceTimezone]);
+
+  useEffect(() => {
+    homeHasLoadedRef.current = homeState.hasLoaded;
+  }, [homeState.hasLoaded]);
 
   const loadWorkspace = useCallback(async (force = false): Promise<boolean> => {
     if (!force && workspaceLoadedRef.current) return true;
@@ -792,7 +825,9 @@ export function WorkspaceApp() {
     }
     workspaceBootstrapRequestRef.current?.request.abort();
     const requestId = ++workspaceBootstrapRequestIdRef.current;
-    const request = createWorkspaceBootstrapRequest<WorkspaceData>("/api/workspace");
+    const request = createWorkspaceBootstrapRequest<WorkspaceData>(
+      workspaceTimeUrl("/api/workspace", currentBusinessDate, workspaceTimezone),
+    );
     workspaceBootstrapRequestRef.current = { id: requestId, request };
     setWorkspaceLoadFailure("");
     setWorkspaceState((current) => beginAsyncDataLoad(current));
@@ -827,7 +862,7 @@ export function WorkspaceApp() {
     })();
     workspaceLoadPromiseRef.current = pending;
     return pending;
-  }, []);
+  }, [currentBusinessDate, workspaceTimezone]);
 
   useEffect(() => {
     void loadHome();
@@ -840,6 +875,12 @@ export function WorkspaceApp() {
       workspaceBootstrapRequestRef.current = null;
     };
   }, [loadHome]);
+
+  useEffect(() => {
+    if (failedBackgroundRefreshDateRef.current !== currentBusinessDate) return;
+    failedBackgroundRefreshDateRef.current = "";
+    void loadHome();
+  }, [checkRevision, currentBusinessDate, loadHome]);
 
   useEffect(() => {
     if (viewRequiresWorkspaceData(view)) void loadWorkspace();
@@ -895,7 +936,7 @@ export function WorkspaceApp() {
         const attention = syncWorkTaskAttention(
           current.attention,
           previousTask,
-          localDateText(new Date()),
+          currentBusinessDate,
         );
         return { ...current, tasks, todayTasks, attention };
       });
@@ -914,13 +955,18 @@ export function WorkspaceApp() {
     if (optimisticTask && !isCompletion) {
       setData((current) =>
         current
-          ? updateTaskCollections(current, id, optimisticTask)
+          ? updateTaskCollections(current, id, optimisticTask, currentBusinessDate)
           : current,
       );
     }
     let response: Response;
     try {
-      response = await postWorkMutation("/api/tasks", { action, id, ...fields });
+      response = await postWorkMutation("/api/tasks", {
+        action,
+        id,
+        ...fields,
+        businessDate: currentBusinessDate,
+      });
     } catch (error) {
       restorePreviousTask();
       const message = isCompletion
@@ -964,7 +1010,7 @@ export function WorkspaceApp() {
           ...(action === "restore" ? { archived_at: null } : {}),
           ...(action === "restore_trash" ? { deleted_at: null, purge_after: null } : {}),
         };
-      const updated = updateTaskCollections(current, id, changed);
+      const updated = updateTaskCollections(current, id, changed, currentBusinessDate);
       if (!result.nextTask) return updated;
       const nextId = String(result.nextTask.id);
       const withNextTask = updated.tasks.some(
@@ -972,14 +1018,19 @@ export function WorkspaceApp() {
       )
         ? updated
         : { ...updated, tasks: [...updated.tasks, result.nextTask] };
-      return updateTaskCollections(withNextTask, nextId, result.nextTask);
+      return updateTaskCollections(
+        withNextTask,
+        nextId,
+        result.nextTask,
+        currentBusinessDate,
+      );
     });
     if (result.task) {
       setHomeState((current) =>
         current.data
           ? updateAsyncData(
               current,
-              updateHomeTaskCollections(current.data, id, result.task),
+              updateHomeTaskCollections(current.data, id, result.task, currentBusinessDate),
             )
           : current,
       );
@@ -1025,7 +1076,12 @@ export function WorkspaceApp() {
     let response: Response;
     let result: Row;
     try {
-      response = await postWorkMutation("/api/work-priority", { kind, section, ids });
+      response = await postWorkMutation("/api/work-priority", {
+        kind,
+        section,
+        ids,
+        businessDate: currentBusinessDate,
+      });
       result = await readApiJson(response, "排序保存失败，请稍后重试。");
     } catch (error) {
       showToast(taskWriteErrorMessage(error, "排序保存失败，请稍后重试。"));
@@ -1106,7 +1162,7 @@ export function WorkspaceApp() {
       const orders = exists
         ? current.orders.map((order) => order.id === result.order.id ? { ...order, ...result.order } : order)
         : [result.order, ...current.orders];
-      const today = getSalesBusinessDate();
+      const today = currentBusinessDate;
       const year = today.slice(0, 4);
       const currentYearVehicleSales = sumAttributedVehicleSales(orders, year, today);
       const activeOrderValue = orders.reduce(
@@ -1210,7 +1266,7 @@ export function WorkspaceApp() {
     setData((current) => {
       if (!current) return current;
       const orders = current.orders.filter((order) => order.id !== id);
-      const today = getSalesBusinessDate();
+      const today = currentBusinessDate;
       const year = today.slice(0, 4);
       const vehicle = sumAttributedVehicleSales(orders, year, today);
       const activeOrderValue = orders.reduce(
@@ -1246,7 +1302,7 @@ export function WorkspaceApp() {
     setData((current) => {
       if (!current) return current;
       const year = String(entry.sales_year);
-      const currentYear = String(new Date().getFullYear());
+      const currentYear = currentBusinessDate.slice(0, 4);
       const amount = year === currentYear
         ? Number(entry.amount_cny || 0)
         : current.metrics.currentYearAccessorySales;
@@ -1288,7 +1344,7 @@ export function WorkspaceApp() {
         attention: syncCustomerFollowUpAttention(
           current.attention,
           updatedCustomer,
-          localDateText(new Date()),
+          currentBusinessDate,
         ),
         contacts: [
           ...current.contacts.filter((item) => String(item.customer_id) !== customerId),
@@ -1354,7 +1410,7 @@ export function WorkspaceApp() {
     setData((current) => {
       if (!current) return current;
       const orders = snapshot.orders || current.orders;
-      const today = getSalesBusinessDate();
+      const today = currentBusinessDate;
       const year = today.slice(0, 4);
       const vehicle = sumAttributedVehicleSales(orders, year, today);
       const activeOrderValue = orders.reduce(
@@ -1457,13 +1513,13 @@ export function WorkspaceApp() {
               tasks: [...current.tasks, optimisticTask],
                 todayTasks:
                   optimisticTaskDate &&
-                  optimisticTaskDate <= new Date().toISOString().slice(0, 10)
+                  optimisticTaskDate <= currentBusinessDate
                     ? [...current.todayTasks, optimisticTask]
                     : current.todayTasks,
                 attention: syncWorkTaskAttention(
                   current.attention,
                   optimisticTask,
-                  localDateText(new Date()),
+                  currentBusinessDate,
                 ),
             }
           : current,
@@ -1478,7 +1534,9 @@ export function WorkspaceApp() {
       if (optimisticTask) {
         if (result.record) {
           setData((current) =>
-            current ? updateTaskCollections(current, optimisticId, result.record) : current,
+            current
+              ? updateTaskCollections(current, optimisticId, result.record, currentBusinessDate)
+              : current,
           );
         }
         closeRecord(true);
@@ -1931,6 +1989,7 @@ function HomeView({
   onOpenAttention: (item: Row) => void;
   onAcknowledgeRisk: (id: string) => void;
 }) {
+  const { currentBusinessDate } = useWorkspaceTime();
   const maxTrend = Math.max(...data.salesTrend.map((item) => item.amount), 1);
   const contributionTotal = data.contribution.reduce(
     (sum, item) => sum + Number(item.amount),
@@ -1942,7 +2001,7 @@ function HomeView({
   const [completingTodayTasks, setCompletingTodayTasks] = useState<Record<string, Row>>({});
   const [todayCompletionErrors, setTodayCompletionErrors] = useState<Record<string, string>>({});
   const visibleAttention = homeAttention.visibleItems;
-  const attentionToday = localDateText(new Date());
+  const attentionToday = currentBusinessDate;
   const displayedTodayTasks = [
     ...data.todayTasks.filter((task) => !completingTodayTasks[String(task.id)]),
     ...Object.values(completingTodayTasks),
@@ -2016,7 +2075,7 @@ function HomeView({
     <div className="view-stack home-view">
       <section className="greeting">
         <span className="eyebrow">FOR JOYCE</span>
-        <h1>{dailyGreeting()}</h1>
+        <h1>{dailyGreeting(currentBusinessDate)}</h1>
       </section>
 
       <section className="metrics-grid" aria-label="核心业务指标">
@@ -2253,6 +2312,7 @@ function WorkView({
     ) => AsyncDataState<CompletedTasksCache>,
   ) => void;
 }) {
+  const { currentBusinessDate, workspaceTimezone } = useWorkspaceTime();
   const [workSection, setWorkSection] = useState<
     "overview" | "reports" | "completed" | "trash"
   >("overview");
@@ -2383,15 +2443,10 @@ function WorkView({
     });
     return () => window.cancelAnimationFrame(frame);
   }, [editingTask, taskEditorFocusField]);
-  const today = localDateText(new Date());
-  const tomorrowDate = new Date(`${today}T12:00:00`);
-  tomorrowDate.setDate(tomorrowDate.getDate() + 1);
-  const tomorrow = localDateText(tomorrowDate);
-  const weekEndDate = new Date(`${today}T12:00:00`);
-  weekEndDate.setDate(
-    weekEndDate.getDate() + ((7 - weekEndDate.getDay()) % 7),
-  );
-  const weekEnd = localDateText(weekEndDate);
+  const today = currentBusinessDate;
+  const tomorrow = addBusinessDateDays(today, 1);
+  const businessWeekday = new Date(`${today}T12:00:00Z`).getUTCDay();
+  const weekEnd = addBusinessDateDays(today, (7 - businessWeekday) % 7);
 
   const availableTasks = data.tasks.filter(
     (task) => !task.deleted_at && !task.archived_at,
@@ -3009,7 +3064,7 @@ function WorkView({
                       {inTrash
                         ? `30 天后永久删除：${formatDate(task.purge_after)}`
                         : completed
-                          ? `完成：${formatCompletedAt(task.completed_at)}`
+                          ? `完成：${formatCompletedAt(task.completed_at, today, workspaceTimezone)}`
                           : task.archived_at
                             ? `归档：${formatDate(task.archived_at)}`
                             : `提醒：${formatDate(taskDate(task))}`}
@@ -3130,7 +3185,7 @@ function WorkView({
                   </span>
                   <p>{project.final_result || "暂无最终结论"}</p>
                   <small>备注：{project.notes || "暂无备注"}</small>
-                  <small>完成：{formatCompletedAt(project.completed_at)}</small>
+                  <small>完成：{formatCompletedAt(project.completed_at, today, workspaceTimezone)}</small>
                 </button>
                 <div className="project-row-actions">
                   <button type="button" onClick={() => setSelectedProject(project)}>
@@ -3614,24 +3669,15 @@ const reportScopeOptions = [
 
 const fixedReportStatuses = ["已完成", "进行中", "待跟进", "暂缓"];
 
-function localDateText(date: Date) {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
-}
-
 function dateAfterLocalDays(today: string, days: number) {
-  const [year, month, day] = today.split("-").map(Number);
-  const date = new Date(year, month - 1, day);
-  date.setDate(date.getDate() + days);
-  return localDateText(date);
+  return addBusinessDateDays(today, days);
 }
 
 function updateTaskCollections(
   current: WorkspaceData,
   id: string,
   changed: Row,
+  businessDate: string,
 ) {
   const priorTodayIds = new Set(
     current.todayTasks.map((task) => String(task.id)),
@@ -3639,7 +3685,7 @@ function updateTaskCollections(
   const tasks = current.tasks.map((task) =>
     String(task.id) === id ? { ...task, ...changed } : task,
   );
-  const today = localDateText(new Date());
+  const today = businessDate;
   const todayTasks = tasks.filter((task) => {
     if (task.deleted_at || task.archived_at) return false;
     if (
@@ -3665,8 +3711,9 @@ function updateHomeTaskCollections(
   current: HomeBootstrapData,
   id: string,
   changed: Row,
+  businessDate: string,
 ) {
-  const today = localDateText(new Date());
+  const today = businessDate;
   const previousIndex = current.todayTasks.findIndex((task) => String(task.id) === id);
   const previousTask = previousIndex >= 0 ? current.todayTasks[previousIndex] : undefined;
   const updatedTask = { ...previousTask, ...changed };
@@ -3699,18 +3746,14 @@ function updateHomeTaskCollections(
   };
 }
 
-function weeklyRange(period: "current" | "previous") {
-  const now = new Date();
-  const weekday = (now.getDay() + 6) % 7;
-  const monday = new Date(now);
-  monday.setDate(now.getDate() - weekday);
+function weeklyRange(period: "current" | "previous", businessDate: string) {
+  const weekday = (new Date(`${businessDate}T12:00:00Z`).getUTCDay() + 6) % 7;
+  let monday = addBusinessDateDays(businessDate, -weekday);
   if (period === "previous") {
-    monday.setDate(monday.getDate() - 7);
-    const sunday = new Date(monday);
-    sunday.setDate(monday.getDate() + 6);
-    return { startDate: localDateText(monday), endDate: localDateText(sunday) };
+    monday = addBusinessDateDays(monday, -7);
+    return { startDate: monday, endDate: addBusinessDateDays(monday, 6) };
   }
-  return { startDate: localDateText(monday), endDate: localDateText(now) };
+  return { startDate: monday, endDate: businessDate };
 }
 
 function reportRows(value: unknown) {
@@ -3794,7 +3837,8 @@ function exportReportWord(title: string, items: Row[]) {
 }
 
 function ReportsView() {
-  const current = weeklyRange("current");
+  const { currentBusinessDate } = useWorkspaceTime();
+  const current = weeklyRange("current", currentBusinessDate);
   const [reportType, setReportType] = useState<"weekly" | "custom">("weekly");
   const [weeklyPeriod, setWeeklyPeriod] = useState<"current" | "previous">(
     "current",
@@ -3821,9 +3865,16 @@ function ReportsView() {
     loadHistory();
   }, [loadHistory]);
 
+  useEffect(() => {
+    if (reportType !== "weekly") return;
+    const range = weeklyRange(weeklyPeriod, currentBusinessDate);
+    setStartDate(range.startDate);
+    setEndDate(range.endDate);
+  }, [currentBusinessDate, reportType, weeklyPeriod]);
+
   function setPeriod(period: "current" | "previous") {
     setWeeklyPeriod(period);
-    const range = weeklyRange(period);
+    const range = weeklyRange(period, currentBusinessDate);
     setStartDate(range.startDate);
     setEndDate(range.endDate);
   }
@@ -4296,13 +4347,14 @@ function CustomersView({
   onSelect: (row: Row) => void;
   onAdd: () => void;
 }) {
+  const { currentBusinessDate } = useWorkspaceTime();
   const [gradeFilter, setGradeFilter] = useState("all");
   const labels = {
     existing: "老客户",
     potential_customer: "潜在客户",
     potential_lead: "潜在线索",
   };
-  const today = localDateText(new Date());
+  const today = currentBusinessDate;
   useEffect(() => setGradeFilter("all"), [tab]);
   const lifecycleRows = data.customers.filter((customer) => {
     if (customer.lifecycle !== tab) return false;
@@ -4825,6 +4877,7 @@ function CustomerDetail({
   focusFollowUps: boolean;
   onFollowUpsFocused: () => void;
 }) {
+  const { currentBusinessDate } = useWorkspaceTime();
   const [message, setMessage] = useState("");
   const [isSaving, setIsSaving] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
@@ -5413,7 +5466,7 @@ function CustomerDetail({
     }
   }
 
-  const today = localDateText(new Date());
+  const today = currentBusinessDate;
   const savedGrade = normalizeCustomerGrade(customer.lifecycle, customer.grade);
   const ratingFollowup = getCustomerFollowUpState(
     { ...customer, grade, next_follow: nextFollow || null },
@@ -6133,6 +6186,7 @@ function LeadDetail({
   onSaved: (snapshot: LeadSnapshot, created: boolean) => void;
   onClose: () => void;
 }) {
+  const { currentBusinessDate } = useWorkspaceTime();
   const lead = snapshot?.lead || {
     company_name: "", country: "", source: "Manual", moto_ev_business: "Unknown",
     priority: "Medium", status: "research_pending",
@@ -6148,7 +6202,7 @@ function LeadDetail({
   const [actionBusy, setActionBusy] = useState("");
   const [developmentOpen, setDevelopmentOpen] = useState(false);
   const [developmentDraft, setDevelopmentDraft] = useState<Row>({
-    developmentAt: localDateText(new Date()), channel: "Email", direction: "outbound", summary: "",
+    developmentAt: currentBusinessDate, channel: "Email", direction: "outbound", summary: "",
   });
   const editorRoot = useRef<HTMLDivElement | null>(null);
   const formRef = useRef<HTMLFormElement | null>(null);
@@ -6295,7 +6349,7 @@ function LeadDetail({
       setHistory(next.history);
       setNextDate(String(next.lead.next_follow_up_date || "").slice(0, 10));
       setDevelopmentDraft({
-        developmentAt: localDateText(new Date()), channel: "Email", direction: "outbound", summary: "",
+        developmentAt: currentBusinessDate, channel: "Email", direction: "outbound", summary: "",
       });
       setDevelopmentOpen(false);
       onSaved(next, false);
@@ -6355,7 +6409,7 @@ function LeadDetail({
   const touchCount = history.filter((entry) => entry.direction === "outbound").length;
   const latestDevelopment = history[0];
   const inactive = ["converted", "paused", "abandoned"].includes(String(lead.status || ""));
-  const today = localDateText(new Date());
+  const today = currentBusinessDate;
 
   return (
     <Modal open title={creating ? "新增 Lead" : "Lead 详情"} onClose={closeGuard.requestClose} viewportFixed bodyRef={editorRoot} hideHeader>
@@ -6445,6 +6499,7 @@ function LeadDetail({
 }
 
 function BusinessDevelopmentView() {
+  const { currentBusinessDate, workspaceTimezone } = useWorkspaceTime();
   const [leads, setLeads] = useState<Row[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -6458,20 +6513,23 @@ function BusinessDevelopmentView() {
   const [motoEvBusiness, setMotoEvBusiness] = useState("all");
   const [selected, setSelected] = useState<LeadSnapshot | null>(null);
   const [creating, setCreating] = useState(false);
-  const today = localDateText(new Date());
+  const today = currentBusinessDate;
 
   const loadLeads = useCallback(async () => {
     setLoading(true);
     setError("");
     try {
-      const result = await readApiJson(await fetch("/api/leads"), "线索池加载失败。");
+      const result = await readApiJson(
+        await fetch(workspaceTimeUrl("/api/leads", today, workspaceTimezone)),
+        "线索池加载失败。",
+      );
       setLeads(Array.isArray(result.leads) ? result.leads : []);
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : "线索池加载失败。");
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [today, workspaceTimezone]);
 
   useEffect(() => { void loadLeads(); }, [loadLeads]);
 
@@ -6566,7 +6624,11 @@ function BusinessDevelopmentView() {
               const overdue = Boolean(next && next < today);
               const nextLabel = !next
                 ? lead.status === "first_outreach_due" ? "待安排首次开发" : isDevelopingLeadStatus(lead.status) ? "未安排下一次开发" : "—"
-                : next === today ? "今天" : overdue ? `逾期 ${Math.max(1, Math.round((new Date(`${today}T00:00:00`).getTime() - new Date(`${next}T00:00:00`).getTime()) / 86400000))}天` : formatDate(next);
+                : next === today
+                  ? "今天"
+                  : overdue
+                    ? `逾期 ${Math.max(1, businessDayDifference(today, next))}天`
+                    : formatDate(next);
               return <button className="lead-pool-row" type="button" key={String(lead.id)} onClick={() => void openLead(String(lead.id))}>
                 <span data-label="公司"><strong>{lead.company_name}</strong><small>{lead.website_domain || lead.website || "—"}</small></span>
                 <span data-label="国家"><strong>{lead.country || "—"}</strong></span>
@@ -6657,8 +6719,8 @@ function isCompletedOrder(order: Row) {
   return isOrderCompleted(order);
 }
 
-function inCurrentMonth(value: unknown) {
-  return isDateInMonth(value, new Date().toISOString().slice(0, 7));
+function inCurrentMonth(value: unknown, businessDate: string) {
+  return isDateInMonth(value, businessDate.slice(0, 7));
 }
 
 function orderPaymentDetail(order: Row) {
@@ -6671,9 +6733,9 @@ function orderPaymentDetail(order: Row) {
   return order.balance_expected_date ? `预计 ${formatDate(order.balance_expected_date)}` : "手动状态";
 }
 
-function orderProductionDetail(order: Row) {
+function orderProductionDetail(order: Row, businessDate: string) {
   if (order.production_notes) return String(order.production_notes);
-  return getShippingDateState(order).label;
+  return getShippingDateState(order, businessDate).label;
 }
 
 function orderShipmentDetail(order: Row) {
@@ -6755,6 +6817,7 @@ function OrdersView({
   attentionTarget: AttentionTarget | null;
   onAttentionTargetConsumed: (target: AttentionTarget) => void;
 }) {
+  const { currentBusinessDate } = useWorkspaceTime();
   const [selectedOrder, setSelectedOrder] = useState<Row | null>(null);
   const [orderEditorOpen, setOrderEditorOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
@@ -6786,7 +6849,7 @@ function OrdersView({
   const [requiresSalesImpactConfirmation, setRequiresSalesImpactConfirmation] =
     useState(true);
   const [completedOrderMenuId, setCompletedOrderMenuId] = useState("");
-  const [accessoryYear, setAccessoryYear] = useState(String(new Date().getFullYear()));
+  const [accessoryYear, setAccessoryYear] = useState(currentBusinessDate.slice(0, 4));
   const [accessoryAmount, setAccessoryAmount] = useState("");
   const orderModalBodyRef = useRef<HTMLDivElement | null>(null);
   const openOrderManualIdsRef = useRef<string[]>([]);
@@ -6857,10 +6920,10 @@ function OrdersView({
   const completedOrders = sortCompletedOrders(searchedOrders.filter(isCompletedOrder)) as Row[];
   const attentionOrders = activeOrders.filter((order) => activeRiskOrderIds.has(String(order.id)));
   const shippingThisMonth = activeOrders.filter((order) =>
-    isExpectedShippingInMonth(order, new Date().toISOString().slice(0, 7)),
+    isExpectedShippingInMonth(order, currentBusinessDate.slice(0, 7), currentBusinessDate),
   );
   const deliveryThisMonth = completedOrders
-    .filter((order) => inCurrentMonth(order.estimated_delivery_date))
+    .filter((order) => inCurrentMonth(order.estimated_delivery_date, currentBusinessDate))
     .sort((a, b) => String(a.estimated_delivery_date).localeCompare(String(b.estimated_delivery_date)));
   const canReorderOpenOrders = activeFilter === "active" && !query.trim() && !busy && !openOrderReordering;
   const showOpenOrderDragHandles = activeFilter === "active" && !query.trim();
@@ -6876,8 +6939,8 @@ function OrdersView({
       ? shippingThisMonth
       : manuallyOrderedActiveOrders;
   const completedOrdersByYear = useMemo(() => {
-    return groupAttributedOrdersByYear(completedOrders, getSalesBusinessDate());
-  }, [completedOrders]);
+    return groupAttributedOrdersByYear(completedOrders, currentBusinessDate);
+  }, [completedOrders, currentBusinessDate]);
   const selectedCompletedOrders = completedOrdersTab === "delivery_month"
     ? deliveryThisMonth
     : completedOrdersByYear.find(({ year }) => year === completedOrdersTab)?.orders ?? [];
@@ -7103,7 +7166,7 @@ function OrdersView({
     setMessage("");
     const response = await fetch("/api/orders/shipments", {
       method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ action: "save_shipment", orderId: selectedOrder.id, ...shipmentDraft }),
+      body: JSON.stringify({ action: "save_shipment", orderId: selectedOrder.id, businessDate: currentBusinessDate, ...shipmentDraft }),
     });
     const result = await response.json();
     if (!response.ok) setMessage(result.error || "发货批次保存失败。");
@@ -7136,7 +7199,7 @@ function OrdersView({
     setShipmentBusy(true);
     const response = await fetch("/api/orders/shipments", {
       method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ action: "delete_shipment", orderId: selectedOrder.id, shipmentId: shipment.id }),
+      body: JSON.stringify({ action: "delete_shipment", orderId: selectedOrder.id, shipmentId: shipment.id, businessDate: currentBusinessDate }),
     });
     const result = await response.json();
     if (!response.ok) setMessage(result.error || "发货批次删除失败。");
@@ -7174,6 +7237,7 @@ function OrdersView({
     const payload: Row = {
       action: "save",
       id: selectedOrder?.id,
+      businessDate: currentBusinessDate,
       confirmFinancialRisk: form.get("confirmFinancialRisk") === "on",
     };
     form.forEach((value, key) => {
@@ -7260,7 +7324,7 @@ function OrdersView({
     try {
       const response = await fetch("/api/orders", {
         method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ action: "save_payment", orderId: selectedOrder.id, ...draft }),
+        body: JSON.stringify({ action: "save_payment", orderId: selectedOrder.id, businessDate: currentBusinessDate, ...draft }),
       });
       const result = await readApiJson(response, "付款记录保存失败。");
       if (!applyPaymentMutation(result)) return;
@@ -7281,7 +7345,7 @@ function OrdersView({
       try {
         const response = await fetch("/api/orders", {
           method: "POST", headers: { "content-type": "application/json" },
-          body: JSON.stringify({ action: "delete_payment", orderId: selectedOrder.id, paymentId: id }),
+          body: JSON.stringify({ action: "delete_payment", orderId: selectedOrder.id, paymentId: id, businessDate: currentBusinessDate }),
         });
         const result = await readApiJson(response, "付款记录删除失败。");
         if (!applyPaymentMutation(result)) return;
@@ -7318,7 +7382,7 @@ function OrdersView({
     try {
       const response = await fetch("/api/orders", {
         method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ action: "save_payment", orderId: selectedOrder.id, paymentId: updatedPayment.id, ...updatedPayment }),
+        body: JSON.stringify({ action: "save_payment", orderId: selectedOrder.id, paymentId: updatedPayment.id, businessDate: currentBusinessDate, ...updatedPayment }),
       });
       const result = await readApiJson(response, "付款记录保存失败。");
       if (!applyPaymentMutation(result)) return;
@@ -7356,7 +7420,7 @@ function OrdersView({
       const response = await fetch("/api/orders", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ action, id: order.id }),
+        body: JSON.stringify({ action, id: order.id, businessDate: currentBusinessDate }),
       });
       const result = await readApiJson(
         response,
@@ -7594,7 +7658,7 @@ function OrdersView({
         <div className="active-order-list">
           {visibleActiveOrders.map((item) => {
             const risks = data.orderRisks.filter((risk) => String(risk.order_id) === String(item.id));
-            const shippingDateState = getShippingDateState(item);
+            const shippingDateState = getShippingDateState(item, currentBusinessDate);
             const fallbackIds = activeOrders.map((order) => String(order.id));
             return (
               <article
@@ -7643,7 +7707,7 @@ function OrdersView({
                   </div>
                   <div className="order-status-columns">
                     <span><small className="order-label">付款</small><strong className="order-primary-text">{orderStatusLabel(item.payment_status, paymentStatusOptions)}</strong><em className="order-secondary-text">{orderPaymentDetail(item)}</em></span>
-                    <span><small className="order-label">生产</small><strong className="order-primary-text">{orderStatusLabel(item.production_status, productionStatusOptions)}</strong><em className="order-secondary-text">{orderProductionDetail(item)}</em></span>
+                    <span><small className="order-label">生产</small><strong className="order-primary-text">{orderStatusLabel(item.production_status, productionStatusOptions)}</strong><em className="order-secondary-text">{orderProductionDetail(item, currentBusinessDate)}</em></span>
                     <span><small className="order-label">运输</small><strong className="order-primary-text">{Number(item.shipment_count || 0) > 0 ? ({ not_shipped: "未发货", partially_shipped: "部分发货", fully_shipped: "已全部发货" } as Row)[String(item.shipment_summary_status)] : orderStatusLabel(item.shipment_status, shipmentStatusOptions)}</strong><em className="order-secondary-text">{Number(item.shipment_count || 0) > 0 ? `已发 ${Number(item.shipment_shipped_quantity || 0).toLocaleString()} / 待发 ${Number(item.shipment_pending_quantity || 0).toLocaleString()} · ${item.shipment_count} 个批次` : orderShipmentDetail(item)}</em></span>
                   </div>
                   {item.progress_next_step ? <p className="order-next-step"><span>当前进展 / 下一步</span>{item.progress_next_step}</p> : null}
@@ -7953,7 +8017,7 @@ function OrdersView({
               <label>
                 发货日期
                 <DateInput name="expectedShippingDate" value={editorShippingDate} onChange={(event) => setEditorShippingDate(event.target.value)} />
-                <small>{getShippingDateState({ expected_shipping_date: editorShippingDate, shipment_status: editorShipmentStatus }).label}</small>
+                <small>{getShippingDateState({ expected_shipping_date: editorShippingDate, shipment_status: editorShipmentStatus }, currentBusinessDate).label}</small>
               </label>
               <label>预计客户收货日期<DateInput name="estimatedDeliveryDate" defaultValue={String(order.estimated_delivery_date || "").slice(0, 10)} /></label>
               {shippingMethod === "sea_freight" ? (
@@ -10066,6 +10130,16 @@ function ContentView({ data }: { data: WorkspaceData }) {
   );
 }
 
+const commonWorkspaceTimezones = [
+  "Asia/Shanghai",
+  "Europe/Rome",
+  "Europe/London",
+  "America/Los_Angeles",
+  "America/New_York",
+  "Asia/Tokyo",
+  "Asia/Singapore",
+] as const;
+
 function SettingsView({
   data,
   onReload,
@@ -10073,11 +10147,30 @@ function SettingsView({
   data: WorkspaceData;
   onReload: () => Promise<void>;
 }) {
+  const {
+    preference,
+    deviceTimezone,
+    workspaceTimezone,
+    currentBusinessDate,
+    invalidManualTimezone,
+    savePreference,
+  } = useWorkspaceTime();
   const [state, setState] = useState<Row | null>(null);
   const [preview, setPreview] = useState<Row | null>(null);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [aiHealth, setAiHealth] = useState<Row | null>(null);
+  const [timezoneDraft, setTimezoneDraft] = useState(
+    preference.mode === "manual" ? preference.timezone || "Asia/Shanghai" : "auto",
+  );
+  const [timezoneBusy, setTimezoneBusy] = useState(false);
+  const [timezoneMessage, setTimezoneMessage] = useState("");
+
+  useEffect(() => {
+    setTimezoneDraft(
+      preference.mode === "manual" ? preference.timezone || "Asia/Shanghai" : "auto",
+    );
+  }, [preference]);
 
   useEffect(() => {
     fetch("/api/ai/provider")
@@ -10128,6 +10221,26 @@ function SettingsView({
     setBusy(false);
   }
 
+  async function saveTimezoneSetting() {
+    if (timezoneBusy) return;
+    const next: WorkspaceTimezonePreference = timezoneDraft === "auto"
+      ? { mode: "auto", timezone: null }
+      : { mode: "manual", timezone: timezoneDraft };
+    setTimezoneBusy(true);
+    setTimezoneMessage("");
+    try {
+      await savePreference(next);
+      setTimezoneMessage("时区设置已保存");
+    } catch {
+      setTimezoneDraft(
+        preference.mode === "manual" ? preference.timezone || "Asia/Shanghai" : "auto",
+      );
+      setTimezoneMessage("时区设置保存失败，请重试");
+    } finally {
+      setTimezoneBusy(false);
+    }
+  }
+
   return (
     <div className="view-stack">
       <SectionTitle
@@ -10135,6 +10248,46 @@ function SettingsView({
         title="设置与数据完整性"
         detail="这里显示迁移事实，不用漂亮数字掩盖待确认数据。"
       />
+      <section className="plain-panel timezone-settings-panel">
+        <div className="panel-heading">
+          <div>
+            <h2>时区</h2>
+            <p className="settings-copy">
+              {preference.mode === "auto"
+                ? `自动 · ${deviceTimezone}`
+                : `${workspaceTimezone} · 手动`}
+            </p>
+          </div>
+          <span className="status good">今天 {currentBusinessDate}</span>
+        </div>
+        <div className="timezone-settings-controls">
+          <label>
+            Workspace 时区
+            <select
+              value={timezoneDraft}
+              disabled={timezoneBusy}
+              onChange={(event) => setTimezoneDraft(event.target.value)}
+            >
+              <option value="auto">自动（跟随设备）</option>
+              {commonWorkspaceTimezones.map((timezone) => (
+                <option key={timezone} value={timezone}>{timezone}</option>
+              ))}
+            </select>
+          </label>
+          <button
+            className="primary-button"
+            type="button"
+            disabled={timezoneBusy}
+            onClick={() => void saveTimezoneSetting()}
+          >
+            {timezoneBusy ? "保存中…" : "保存时区"}
+          </button>
+        </div>
+        {invalidManualTimezone ? (
+          <p className="inline-warning">当前手动时区无效，请重新选择。</p>
+        ) : null}
+        {timezoneMessage ? <p className="form-note">{timezoneMessage}</p> : null}
+      </section>
       <section className="settings-grid">
         <article className="plain-panel">
           <div className="panel-heading">

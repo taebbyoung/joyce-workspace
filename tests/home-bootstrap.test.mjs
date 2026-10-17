@@ -138,7 +138,7 @@ test("Home API is narrow and WorkspaceApp defers the full workspace request", as
   assert.match(homeRoute, /LIMIT 6/);
   assert.match(homeRoute, /todayTaskTotal/);
   assert.doesNotMatch(homeRoute, /SELECT \* FROM contacts|SELECT \* FROM order_items|SELECT \* FROM order_payments|SELECT \* FROM knowledge_items|SELECT \* FROM sales_playbook_items/);
-  assert.match(app, /createWorkspaceBootstrapRequest<HomeBootstrapData>\("\/api\/home"\)/);
+  assert.match(app, /createWorkspaceBootstrapRequest<HomeBootstrapData>\([\s\S]*workspaceTimeUrl\("\/api\/home"/);
   assert.match(app, /void loadHome\(\)/);
   assert.match(app, /viewRequiresWorkspaceData\(view\)/);
   assert.match(app, /workspaceLoadPromiseRef/);

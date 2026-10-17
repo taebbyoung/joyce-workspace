@@ -3389,6 +3389,38 @@ kbd {
   line-height: 1.6;
 }
 
+.timezone-settings-panel {
+  display: grid;
+  gap: 14px;
+}
+
+.timezone-settings-panel .panel-heading h2,
+.timezone-settings-panel .panel-heading p {
+  margin: 0;
+}
+
+.timezone-settings-panel .settings-copy {
+  font-size: 13px;
+}
+
+.timezone-settings-controls {
+  display: flex;
+  align-items: end;
+  gap: 12px;
+}
+
+.timezone-settings-controls label {
+  display: grid;
+  flex: 1;
+  gap: 6px;
+  min-width: 0;
+  color: var(--muted);
+}
+
+.timezone-settings-controls select {
+  width: 100%;
+}
+
 .file-drop {
   display: grid;
   min-height: 120px;
@@ -4806,6 +4838,13 @@ kbd {
     max-height: min(48dvh, 420px);
   }
 
+}
+
+@media (max-width: 640px) {
+  .timezone-settings-controls {
+    align-items: stretch;
+    flex-direction: column;
+  }
 }
 
 @media (max-width: 760px) {

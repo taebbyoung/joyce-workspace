@@ -21,7 +21,7 @@ test("task completion waits for the server while other single-task writes stay l
   assert.match(app, /taskPatchForLocalState/);
   assert.match(app, /patch\.status = "snoozed"/);
   assert.match(app, /function taskCompletionFailureMessage/);
-  assert.match(updateSource, /postWorkMutation\("\/api\/tasks", \{ action, id, \.\.\.fields \}\)/);
+  assert.match(updateSource, /postWorkMutation\("\/api\/tasks", \{[\s\S]*action,[\s\S]*id,[\s\S]*\.\.\.fields,[\s\S]*businessDate: currentBusinessDate/);
   assert.match(updateSource, /const isCompletion = action === "status" && fields\.status === "completed"/);
   assert.match(updateSource, /if \(optimisticTask && !isCompletion\)/);
   assert.match(updateSource, /taskCompletionFailureMessage\(previousTask, error\)/);
@@ -146,7 +146,7 @@ test("Work creation keeps its form retryable and updates task or project state l
   assert.match(submit, /setRecordError\(message\)/);
   assert.match(submit, /recordModal === "project" && result\.record/);
   assert.match(submit, /projects: \[result\.record, \.\.\.current\.projects\]/);
-  assert.match(submit, /updateTaskCollections\(current, optimisticId, result\.record\)/);
+  assert.match(submit, /updateTaskCollections\(current, optimisticId, result\.record, currentBusinessDate\)/);
   assert.match(app, /busy=\{recordBusy\}/);
   assert.match(app, /disabled=\{busy\}/);
   assert.match(workspaceRoute, /function workspacePostResponse\(/);

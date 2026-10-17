@@ -7,6 +7,7 @@ import {
 import { refreshOrderRisks } from "@/lib/order-risk";
 import { attachShipmentSummaries } from "@/lib/order-shipments";
 import { requiresOrderSalesImpactConfirmation } from "@/lib/order-sales-impact";
+import { getBusinessDate, isValidDateOnly } from "@/lib/workspace-time";
 
 export const runtime = "edge";
 
@@ -290,6 +291,9 @@ export async function POST(request: Request) {
   try {
     await ensureWorkspace();
     const payload = (await request.json()) as Record<string, unknown>;
+    const businessDate = isValidDateOnly(payload.businessDate)
+      ? String(payload.businessDate)
+      : getBusinessDate();
     const action = text(payload.action, 40);
     const db = getD1();
     const now = new Date().toISOString();
@@ -429,7 +433,7 @@ export async function POST(request: Request) {
            WHERE order_id = ? AND status = 'active'`,
         ).bind(now, id).run();
       } else {
-        await refreshOrderRisks(db, id);
+        await refreshOrderRisks(db, id, businessDate);
       }
       const [order, orderRisks] = await Promise.all([
         db.prepare("SELECT * FROM orders WHERE id = ?").bind(id).first<Record<string, unknown>>(),
@@ -853,7 +857,7 @@ export async function POST(request: Request) {
       }
     }
 
-    await refreshOrderRisks(db, id);
+    await refreshOrderRisks(db, id, businessDate);
     await db.prepare("DELETE FROM order_risks WHERE order_id = ? AND trigger_type = 'manual'")
       .bind(id)
       .run();

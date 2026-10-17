@@ -3,7 +3,7 @@ import { seedExistingOrderRisks } from "./order-risk";
 
 type WorkspaceDatabase = ReturnType<typeof getD1>;
 
-export async function ensureOrderRiskSeeded(db: WorkspaceDatabase) {
+export async function ensureOrderRiskSeeded(db: WorkspaceDatabase, businessDate: string) {
   const seeded = await db
     .prepare("SELECT value FROM settings WHERE key = 'order_final_risks_seeded'")
     .first<{ value: string }>();
@@ -12,7 +12,7 @@ export async function ensureOrderRiskSeeded(db: WorkspaceDatabase) {
   const orderIds = await db
     .prepare("SELECT id FROM orders WHERE deleted_at IS NULL")
     .all<{ id: string }>();
-  await seedExistingOrderRisks(db);
+  await seedExistingOrderRisks(db, businessDate);
   await db
     .prepare(
       `INSERT OR REPLACE INTO settings (key, value, updated_at)

@@ -10,15 +10,15 @@ type RiskSeed = {
   trigger: string;
 };
 
-function dateDistance(date: unknown) {
+function dateDistance(date: unknown, businessDate: string) {
   const value = String(date || "").slice(0, 10);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
   const target = Date.parse(`${value}T00:00:00Z`);
-  const today = Date.parse(`${new Date().toISOString().slice(0, 10)}T00:00:00Z`);
+  const today = Date.parse(`${businessDate}T00:00:00Z`);
   return Math.round((target - today) / 86_400_000);
 }
 
-export async function refreshOrderRisks(db: D1Database, orderId: string) {
+export async function refreshOrderRisks(db: D1Database, orderId: string, businessDate: string) {
   const order = await db
     .prepare("SELECT * FROM orders WHERE id = ? AND deleted_at IS NULL")
     .bind(orderId)
@@ -37,9 +37,9 @@ export async function refreshOrderRisks(db: D1Database, orderId: string) {
   }
 
   const risks: RiskSeed[] = [];
-  const deliveryDays = dateDistance(order.estimated_delivery_date);
-  const expectedShippingDays = dateDistance(order.expected_shipping_date);
-  const shippingDateState = getShippingDateState(order);
+  const deliveryDays = dateDistance(order.estimated_delivery_date, businessDate);
+  const expectedShippingDays = dateDistance(order.expected_shipping_date, businessDate);
+  const shippingDateState = getShippingDateState(order, businessDate);
   const payment = String(order.payment_status || "");
   const production = String(order.production_status || "");
   const shipment = String(order.shipment_status || "");
@@ -164,8 +164,8 @@ export async function refreshOrderRisks(db: D1Database, orderId: string) {
     const label = shipmentLabel(batch);
     const batchStatus = String(batch.shipment_status || "not_arranged");
     const method = String(batch.shipping_method || "");
-    const expectedDays = dateDistance(batch.expected_shipping_date);
-    const deliveredDays = dateDistance(batch.estimated_delivery_date ?? batch.eta);
+    const expectedDays = dateDistance(batch.expected_shipping_date, businessDate);
+    const deliveredDays = dateDistance(batch.estimated_delivery_date ?? batch.eta, businessDate);
     const actuallyShipped = Boolean(String(batch.actual_shipping_date || "").slice(0, 10));
     if (!actuallyShipped && expectedDays !== null && expectedDays <= 10 && ["unpaid", "balance_pending", "partial_payment"].includes(payment)) {
       risks.push({
@@ -280,7 +280,7 @@ export async function refreshOrderRisks(db: D1Database, orderId: string) {
   await db.batch(statements);
 }
 
-export async function seedExistingOrderRisks(db: D1Database) {
+export async function seedExistingOrderRisks(db: D1Database, businessDate: string) {
   const now = new Date().toISOString();
   await db.batch([
     db.prepare(
@@ -301,7 +301,7 @@ export async function seedExistingOrderRisks(db: D1Database) {
         (id, order_id, risk_level, title, reason, recommended_action,
          evidence_source, trigger_type, status, detected_at, updated_at)
        SELECT lower(hex(randomblob(16))), id,
-         CASE WHEN julianday(expected_shipping_date) - julianday(date('now')) <= 3 THEN 'High' ELSE 'Medium' END,
+         CASE WHEN julianday(expected_shipping_date) - julianday(?) <= 3 THEN 'High' ELSE 'Medium' END,
          '预计发货前仍有款项待收',
          '预计发货日期 ' || expected_shipping_date || '；付款状态 ' || payment_status,
          '核对货款收清安排，并确认发货条件。',
@@ -314,23 +314,23 @@ export async function seedExistingOrderRisks(db: D1Database) {
          AND payment_status IN ('unpaid', 'partial_payment', 'balance_pending')
          AND expected_shipping_date IS NOT NULL
          AND COALESCE(shipment_status, '') NOT IN ('in_transit', 'arrived', 'delivered')
-         AND julianday(expected_shipping_date) - julianday(date('now')) <= 10`,
-    ).bind(now, now),
+         AND julianday(expected_shipping_date) - julianday(?) <= 10`,
+    ).bind(businessDate, now, now, businessDate),
     db.prepare(
       `INSERT INTO order_risks
         (id, order_id, risk_level, title, reason, recommended_action,
          evidence_source, trigger_type, status, detected_at, updated_at)
        SELECT lower(hex(randomblob(16))), id, 'High',
-         '预计发货日期已逾期' || CAST(julianday(date('now')) - julianday(expected_shipping_date) AS INTEGER) || '天',
-         '预计发货：' || expected_shipping_date || ' · 已逾期' || CAST(julianday(date('now')) - julianday(expected_shipping_date) AS INTEGER) || '天，运输状态仍为 ' || COALESCE(shipment_status, '未设置') || '。',
+         '预计发货日期已逾期' || CAST(julianday(?) - julianday(expected_shipping_date) AS INTEGER) || '天',
+         '预计发货：' || expected_shipping_date || ' · 已逾期' || CAST(julianday(?) - julianday(expected_shipping_date) AS INTEGER) || '天，运输状态仍为 ' || COALESCE(shipment_status, '未设置') || '。',
          '确认实际发货安排，并更新发货日期或运输状态。',
          'orders.expected_shipping_date=' || expected_shipping_date || '; orders.shipment_status=' || COALESCE(shipment_status, '空'),
          'shipping_date_overdue', 'active', ?, ?
        FROM orders
        WHERE deleted_at IS NULL AND COALESCE(order_status, 'active') <> 'completed'
-         AND expected_shipping_date < date('now')
+         AND expected_shipping_date < ?
          AND COALESCE(shipment_status, '') NOT IN ('in_transit', 'arrived', 'delivered')`,
-    ).bind(now, now),
+    ).bind(businessDate, businessDate, now, now, businessDate),
     db.prepare(
       `INSERT INTO order_risks
         (id, order_id, risk_level, title, reason, recommended_action,
@@ -343,9 +343,9 @@ export async function seedExistingOrderRisks(db: D1Database) {
          'delivery_overdue', 'active', ?, ?
        FROM orders
        WHERE deleted_at IS NULL AND COALESCE(order_status, 'active') <> 'completed'
-         AND estimated_delivery_date < date('now')
+         AND estimated_delivery_date < ?
          AND COALESCE(shipment_status, '') <> 'delivered'`,
-    ).bind(now, now),
+    ).bind(now, now, businessDate),
     db.prepare(
       `INSERT INTO order_risks
         (id, order_id, risk_level, title, reason, recommended_action,

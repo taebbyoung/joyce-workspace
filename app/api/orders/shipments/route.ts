@@ -1,6 +1,7 @@
 import { ensureWorkspace, getD1 } from "@/db/runtime";
 import { refreshOrderRisks } from "@/lib/order-risk";
 import { attachShipmentSummaries } from "@/lib/order-shipments";
+import { getBusinessDate, isValidDateOnly } from "@/lib/workspace-time";
 
 export const runtime = "edge";
 
@@ -53,6 +54,9 @@ export async function POST(request: Request) {
     await ensureWorkspace();
     const db = getD1();
     const payload = await request.json() as Row;
+    const businessDate = isValidDateOnly(payload.businessDate)
+      ? String(payload.businessDate)
+      : getBusinessDate();
     const action = text(payload.action, 40);
     const orderId = text(payload.orderId, 100);
     if (!orderId) return errorResponse("缺少订单 ID。");
@@ -71,7 +75,7 @@ export async function POST(request: Request) {
           VALUES (?, 'order_shipment_deleted', 'order_shipment', ?, ?, NULL, 'user')`)
           .bind(crypto.randomUUID(), shipmentId, JSON.stringify(shipment)),
       ]);
-      await refreshOrderRisks(db, orderId);
+      await refreshOrderRisks(db, orderId, businessDate);
       return Response.json(await orderSnapshot(db, orderId));
     }
 
@@ -164,7 +168,7 @@ export async function POST(request: Request) {
         VALUES (?, ?, 'order_shipment', ?, ?, ?, 'user')`)
         .bind(crypto.randomUUID(), existing ? "order_shipment_updated" : "order_shipment_created", shipmentId, JSON.stringify(existing ?? null), JSON.stringify({ ...values, items })),
     ]);
-    await refreshOrderRisks(db, orderId);
+    await refreshOrderRisks(db, orderId, businessDate);
     return Response.json(await orderSnapshot(db, orderId));
   } catch (error) {
     const message = error instanceof Error ? error.message : "发货批次保存失败。";

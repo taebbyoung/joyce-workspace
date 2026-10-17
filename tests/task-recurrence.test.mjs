@@ -117,7 +117,8 @@ test("completion and deletion share the server recurrence path", async () => {
   assert.match(statusFlow, /nextTask/);
   assert.match(deleteFlow, /buildNextRecurringTask/);
   assert.match(deleteFlow, /nextTask/);
-  assert.match(route, /getSalesBusinessDate\(\)/);
+  assert.match(route, /const businessDate = isValidDateOnly\(payload\.businessDate\)/);
+  assert.match(route, /buildNextRecurringTask\([\s\S]*businessDate/);
   assert.match(statusFlow, /nextReminderDate/);
   assert.doesNotMatch(statusFlow, /SELECT \* FROM tasks WHERE id = \? LIMIT 1/);
   assert.doesNotMatch(statusFlow, /requestAi|requestJson|Gemini/);

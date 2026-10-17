@@ -16,6 +16,7 @@ import {
   sortLeads,
   websiteDomain,
 } from "@/lib/business-development";
+import { getRequestWorkspaceTime } from "@/lib/workspace-time";
 
 export const runtime = "edge";
 
@@ -31,17 +32,6 @@ function nullable(value: unknown, max = 5000) {
 
 function errorResponse(error: string, status = 400) {
   return Response.json({ error }, { status });
-}
-
-function today() {
-  const parts = new Intl.DateTimeFormat("en", {
-    timeZone: "Asia/Shanghai",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).formatToParts(new Date());
-  const value = Object.fromEntries(parts.map((part) => [part.type, part.value]));
-  return `${value.year}-${value.month}-${value.day}`;
 }
 
 async function audit(action: string, entityId: string, before: unknown, after: unknown) {
@@ -198,7 +188,9 @@ export async function GET(request: Request) {
       (!motoEvBusiness || lead.moto_ev_business === motoEvBusiness) &&
       (!targetModel || String(lead.target_models || "").toLowerCase().includes(targetModel));
   });
-  return Response.json({ leads: sortLeads(filtered, today()) });
+  return Response.json({
+    leads: sortLeads(filtered, getRequestWorkspaceTime(request).businessDate),
+  });
 }
 
 export async function POST(request: Request) {

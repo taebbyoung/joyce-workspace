@@ -564,7 +564,7 @@ test("order workflow API is local, explicit and never calls AI", async () => {
   );
   assert.doesNotMatch(completedOrderSection, /最后更新|formatCompletedAt/);
   assert.match(completedOrderSection, /completed-orders-tabs[\s\S]*本月预计客户收货/);
-  assert.match(ordersView, /groupAttributedOrdersByYear\(completedOrders, getSalesBusinessDate\(\)\)/);
+  assert.match(ordersView, /groupAttributedOrdersByYear\(completedOrders, currentBusinessDate\)/);
   assert.match(completedOrderSection, /completedOrdersTab === "delivery_month"/);
   assert.match(completedOrderSection, /role="tablist"/);
   assert.match(completedOrderSection, /role="tab"/);

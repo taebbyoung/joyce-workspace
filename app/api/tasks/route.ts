@@ -3,7 +3,7 @@ import {
   buildNextRecurringTask,
   taskRecurrenceRules,
 } from "@/lib/task-recurrence";
-import { getSalesBusinessDate } from "@/lib/order-sales-attribution";
+import { getBusinessDate, isValidDateOnly } from "@/lib/workspace-time";
 
 export const runtime = "edge";
 
@@ -122,6 +122,9 @@ export async function POST(request: Request) {
     await ensureWorkspace();
     const payload = (await request.json()) as Record<string, unknown>;
     const action = text(payload.action, 40);
+    const businessDate = isValidDateOnly(payload.businessDate)
+      ? String(payload.businessDate)
+      : getBusinessDate();
     const id = text(payload.id, 100);
     if (!id) return errorResponse("缺少任务 ID。");
 
@@ -172,7 +175,7 @@ export async function POST(request: Request) {
       ).toISOString();
       const nextOccurrence = buildNextRecurringTask(
         existing,
-        getSalesBusinessDate(),
+        businessDate,
         now,
       );
       const deletedTask = {
@@ -379,7 +382,7 @@ export async function POST(request: Request) {
         }
         const nextOccurrence = buildNextRecurringTask(
           existing,
-          getSalesBusinessDate(),
+          businessDate,
           now,
         );
         const completedTask = {

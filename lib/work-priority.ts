@@ -1,20 +1,10 @@
 export type WorkPriorityKind = "tasks" | "projects";
 export type WorkPrioritySection = "today" | "upcoming" | "projects";
 
-function shanghaiDate() {
-  const parts = new Intl.DateTimeFormat("en", {
-    timeZone: "Asia/Shanghai",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).formatToParts(new Date());
-  const value = Object.fromEntries(parts.map((part) => [part.type, part.value]));
-  return `${value.year}-${value.month}-${value.day}`;
-}
-
 async function currentIds(
   db: D1Database,
   section: WorkPrioritySection,
+  businessDate: string,
 ): Promise<string[]> {
   if (section === "projects") {
     const rows = await db
@@ -46,7 +36,7 @@ async function currentIds(
        ORDER BY CASE WHEN COALESCE(work_sort_order, 0) > 0 THEN 0 ELSE 1 END,
                 work_sort_order, created_at, id`,
     )
-    .bind(shanghaiDate())
+    .bind(businessDate)
     .all<{ id: string }>();
   return rows.results.map((row) => row.id);
 }
@@ -56,6 +46,7 @@ export async function saveManualWorkOrder(
   kind: WorkPriorityKind,
   section: WorkPrioritySection,
   ids: string[],
+  businessDate: string,
 ) {
   if (
     (kind === "projects" && section !== "projects") ||
@@ -68,7 +59,7 @@ export async function saveManualWorkOrder(
     throw new Error("排序列表无效。");
   }
 
-  const current = await currentIds(db, section);
+  const current = await currentIds(db, section, businessDate);
   const validIds = new Set(current);
   if (uniqueIds.some((id) => !validIds.has(id))) {
     throw new Error("列表已发生变化，请刷新后再拖动。");

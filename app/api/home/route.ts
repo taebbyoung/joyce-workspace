@@ -4,7 +4,7 @@ import {
   homeNonCustomerAttentionSql,
 } from "@/lib/home-bootstrap";
 import { ensureOrderRiskSeeded } from "@/lib/order-risk-bootstrap";
-import { getSalesBusinessDate } from "@/lib/order-sales-attribution";
+import { getRequestWorkspaceTime } from "@/lib/workspace-time";
 
 export const runtime = "edge";
 
@@ -15,14 +15,14 @@ async function all<T>(sql: string, ...bindings: unknown[]) {
   return result.results;
 }
 
-export async function GET() {
+export async function GET(request: Request) {
   const requestStartedAt = performance.now();
   try {
     await ensureWorkspace();
     const db = getD1();
-    const today = getSalesBusinessDate();
+    const { businessDate: today } = getRequestWorkspaceTime(request);
     const year = today.slice(0, 4);
-    await ensureOrderRiskSeeded(db);
+    await ensureOrderRiskSeeded(db, today);
 
     const [
       metrics,
